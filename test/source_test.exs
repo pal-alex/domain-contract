@@ -29,6 +29,7 @@ defmodule DomainContract.SourceTest do
     refute File.exists?(Path.join(output, "secret"))
     refute File.exists?(Path.join(output, ".git"))
     assert DomainContract.Source.vendor!(output, revision, Path.join(root, "second"))
+    assert File.read!(Path.join([root, "second", "library.ex"])) == "locked version"
 
     assert_raise RuntimeError, fn ->
       DomainContract.Source.vendor!(source, String.duplicate("a", 40), output)

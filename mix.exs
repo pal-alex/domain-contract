@@ -4,7 +4,7 @@ defmodule DomainContract.MixProject do
   def project do
     [
       app: :domain_contract,
-      version: "0.1.0",
+      version: "0.1.1",
       elixir: "~> 1.15",
       compilers: [:boundary] ++ Mix.compilers(),
       deps: [

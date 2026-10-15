@@ -6,7 +6,7 @@ defmodule Mix.Tasks.Domain.Check do
 
   @impl true
   def run(paths) do
-    Mix.Task.run("app.start")
+    Mix.Task.run("compile", ["--warnings-as-errors"])
     if paths == [], do: Mix.raise("usage: mix domain.check contract.json [...]")
     contracts = Enum.flat_map(paths, &(File.read!(&1) |> Jason.decode!() |> List.wrap()))
 
