@@ -53,3 +53,9 @@ and separately run system integration scenarios verify those guarantees.
 
 Library checks: `mix deps.get`, `mix compile --warnings-as-errors`,
 `mix format --check-formatted`, and `mix test`.
+
+For private Git dependencies, run `mix domain.vendor` in an authenticated build
+checkout before creating a Docker context. This materializes the exact locked Git
+revision in `vendor/domain_contract`, excluding credentials and Git metadata.
+The application's dependency definition can use that directory in build/source
+bundles and its pinned Git dependency in ordinary development checkouts.
