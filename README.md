@@ -5,6 +5,16 @@ provider/consumer compatibility checks, and validated call adapters and test stu
 It does not depend on Midva or SoloKeeper. Domain declarations remain in the owning
 application or plugin and are exported from that owner's exact revision.
 
+Add the public Git dependency to the owning project's `mix.exs`:
+
+```elixir
+{:domain_contract,
+ git: "https://github.com/pal-alex/domain-contract.git",
+ ref: "e0d128a446a4a4cde440c69818935e5cd4e72811"}
+```
+
+Then declare the product's contracts inside that project:
+
 ```elixir
 defmodule Chat.Contract do
   use DomainContract
@@ -35,6 +45,8 @@ The compiler validates local schemas and references. Canonical exports without
 consumer declarations preserve their original format v1/v2; consumers use format v3.
 
 Run `mix domain.contract Chat.Contract --output chat.json` in the owner project.
+Use `mix domain.export --output priv/domain_contracts.json` to export all root domains
+owned by the current application, excluding fragments and dependency applications.
 Run `mix domain.check tasks.json chat.json` once for the assembled candidate. The
 checker rejects missing/ambiguous providers, insufficient cumulative versions,
 missing operations, incompatible requests, and responses the consumer cannot handle.
