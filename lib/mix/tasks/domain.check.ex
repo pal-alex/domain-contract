@@ -8,7 +8,7 @@ defmodule Mix.Tasks.Domain.Check do
   def run(paths) do
     Mix.Task.run("app.start")
     if paths == [], do: Mix.raise("usage: mix domain.check contract.json [...]")
-    contracts = Enum.map(paths, &(File.read!(&1) |> Jason.decode!()))
+    contracts = Enum.flat_map(paths, &(File.read!(&1) |> Jason.decode!() |> List.wrap()))
 
     case DomainContract.Compatibility.check(contracts) do
       :ok ->
