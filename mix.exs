@@ -4,9 +4,10 @@ defmodule DomainContract.MixProject do
   def project do
     [
       app: :domain_contract,
-      version: "0.1.1",
+      version: "0.2.0",
       elixir: "~> 1.15",
       compilers: [:boundary] ++ Mix.compilers(),
+      aliases: [verify: ["format --check-formatted", "compile --warnings-as-errors", "test"]],
       deps: [
         {:boundary, "~> 0.11", runtime: false},
         {:spark, "~> 2.7.3"},
@@ -15,5 +16,5 @@ defmodule DomainContract.MixProject do
     ]
   end
 
-  def application, do: []
+  def application, do: [extra_applications: [:crypto]]
 end

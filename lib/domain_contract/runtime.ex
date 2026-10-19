@@ -8,39 +8,97 @@ defmodule DomainContract.Runtime do
   """
   alias DomainContract.Info
 
-  def input(module, operation, value), do: validate(module, operation, :input, value)
-  def output(module, operation, value), do: validate(module, operation, :output, value)
+  def input(source, operation, value), do: validate(source, operation, :input, value)
+  def output(source, operation, value), do: validate(source, operation, :output, value)
 
-  def consumer_input(module, identity, operation, value),
-    do: validate_consumer(module, identity, operation, :input, value)
+  def input(source, name, operation, value),
+    do: validate_interface(source, name, operation, :input, value)
 
-  def consumer_output(module, identity, operation, value),
-    do: validate_consumer(module, identity, operation, :output, value)
+  def output(source, name, operation, value),
+    do: validate_interface(source, name, operation, :output, value)
 
-  defp validate_consumer(module, {kind, name}, operation, direction, value) do
-    contract = Info.contract(module)
+  def dependency(consumer, name) do
+    contract = Info.canonical(consumer)
+
+    case Enum.filter(contract["consumes"] || [], &(&1["name"] == name)) do
+      [reference] -> {:ok, reference}
+      [] -> {:error, {:invalid_contract, :undeclared_dependency}}
+      _ -> {:error, {:invalid_contract, :ambiguous_interface}}
+    end
+  end
+
+  def reference_input(reference, operation, value),
+    do: validate_reference(reference, operation, :input, value)
+
+  def reference_output(reference, operation, value),
+    do: validate_reference(reference, operation, :output, value)
+
+  defp validate_reference(reference, operation, direction, value) do
+    definition = reference["definition"]
+
+    if is_map(definition) and is_map(definition["interface"]) and is_list(definition["entities"]) do
+      declaration = Enum.find(definition["interface"]["operations"], &(&1["name"] == operation))
+
+      case validate_value(definition, declaration, operation, direction, value) do
+        {:error, :invalid_operation} -> {:error, {:invalid_contract, :invalid_operation}}
+        result -> result
+      end
+    else
+      {:error, {:invalid_contract, :invalid_reference}}
+    end
+  end
+
+  defp validate_interface(source, name, operation, direction, value) do
+    contract = Info.canonical(source)
+
+    interfaces =
+      contract["interfaces"] ++
+        Enum.map(contract["implements"] || [], & &1["definition"]["interface"])
+
+    case Enum.filter(interfaces, &(&1["name"] == name)) do
+      [interface] ->
+        case Enum.find(contract["implements"] || [], &(&1["name"] == name)) do
+          nil ->
+            validate_value(
+              contract,
+              Enum.find(interface["operations"], &(&1["name"] == operation)),
+              operation,
+              direction,
+              value
+            )
+
+          reference ->
+            validate_reference(reference, operation, direction, value)
+        end
+
+      [] ->
+        {:error, {:invalid_contract, :invalid_interface}}
+
+      _ ->
+        {:error, {:invalid_contract, :ambiguous_interface}}
+    end
+  end
+
+  defp validate(source, operation, direction, value) do
+    contract = Info.canonical(source)
 
     matches =
-      for interface <- Map.get(contract, :consumes, []),
-          interface.kind == kind and interface.name == name,
-          declaration <- interface.operations,
-          Atom.to_string(declaration.name) == operation,
-          do: declaration
+      contract["interfaces"]
+      |> Enum.flat_map(& &1["operations"])
+      |> Enum.filter(&(&1["name"] == operation))
 
-    declaration = List.first(matches)
-    validate_value(contract, declaration, operation, direction, value, direction == :output)
+    declaration =
+      case matches do
+        [declaration] -> declaration
+        [] -> nil
+        _ -> :ambiguous
+      end
+
+    validate_value(contract, declaration, operation, direction, value)
   end
 
-  defp validate(module, operation, direction, value) do
-    contract = Info.contract(module)
-
-    declaration = declaration(contract, operation)
-
-    validate_value(contract, declaration, operation, direction, value, false)
-  end
-
-  defp validate_value(contract, declaration, operation, direction, value, projection) do
-    entities = {Map.new(contract.entities, &{&1.name, &1}), projection}
+  defp validate_value(contract, declaration, operation, direction, value) do
+    entities = Map.new(contract["entities"], &{&1["name"], &1})
 
     cond do
       is_nil(declaration) ->
@@ -49,43 +107,32 @@ defmodule DomainContract.Runtime do
       declaration == :ambiguous ->
         {:error, :ambiguous_operation}
 
-      direction == :output and declaration.optional_output and is_nil(value) ->
+      direction == :output and declaration["optional_output"] and is_nil(value) ->
         :ok
 
       true ->
-        check({:entity, Map.fetch!(declaration, direction)}, value, entities, [
+        check(["entity", Map.fetch!(declaration, to_string(direction))], value, entities, [
           operation,
           direction
         ])
     end
   end
 
-  defp declaration(contract, operation) do
-    contract.interfaces
-    |> Enum.flat_map(& &1.operations)
-    |> Enum.filter(&(Atom.to_string(&1.name) == operation))
-    |> case do
-      [declaration] -> declaration
-      [] -> nil
-      _ -> :ambiguous
-    end
-  end
+  defp check("opaque", _value, _entities, _path), do: :ok
+  defp check("string", value, _, _) when is_binary(value), do: :ok
+  defp check("integer", value, _, _) when is_integer(value), do: :ok
+  defp check("float", value, _, _) when is_number(value), do: :ok
+  defp check("boolean", value, _, _) when is_boolean(value), do: :ok
 
-  defp check(:opaque, _value, _entities, _path), do: :ok
-  defp check(:string, value, _, _) when is_binary(value), do: :ok
-  defp check(:integer, value, _, _) when is_integer(value), do: :ok
-  defp check(:float, value, _, _) when is_number(value), do: :ok
-  defp check(:boolean, value, _, _) when is_boolean(value), do: :ok
-
-  defp check(:json_scalar, value, _, _)
+  defp check("json_scalar", value, _, _)
        when is_nil(value) or is_boolean(value) or is_binary(value) or is_number(value),
        do: :ok
 
-  defp check({:enum, values}, value, _, path) do
+  defp check(["enum", values], value, _, path) do
     if value in values, do: :ok, else: invalid(path)
   end
 
-  defp check({:variant, choices}, value, entities, path) when is_map(value) do
+  defp check(["variant", choices], value, entities, path) when is_map(value) do
     cond do
       Enum.any?(Map.keys(value), &(&1 not in ["type", "data"])) ->
         invalid(path ++ [:unknown_field])
@@ -101,27 +148,27 @@ defmodule DomainContract.Runtime do
     end
   end
 
-  defp check(:datetime, value, _, path) when is_binary(value) do
+  defp check("datetime", value, _, path) when is_binary(value) do
     if match?({:ok, _, _}, DateTime.from_iso8601(value)), do: :ok, else: invalid(path)
   end
 
-  defp check(:map, value, _, _) when is_map(value), do: :ok
+  defp check("map", value, _, _) when is_map(value), do: :ok
 
-  defp check({:list, type}, values, entities, path) when is_list(values),
+  defp check(["list", type], values, entities, path) when is_list(values),
     do: each(values, &check(type, &1, entities, path))
 
-  defp check({:dictionary, type}, values, entities, path) when is_map(values) do
+  defp check(["dictionary", type], values, entities, path) when is_map(values) do
     each(values, fn {key, value} ->
       if is_binary(key), do: check(type, value, entities, path ++ [key]), else: invalid(path)
     end)
   end
 
-  defp check({:entity, name}, value, {definitions, projection} = entities, path)
+  defp check(["entity", name], value, entities, path)
        when is_map(value) do
-    fields = definitions[name].fields
-    keys = Enum.map(fields, &Atom.to_string(&1.name))
+    fields = entities[name]["fields"]
+    keys = Enum.map(fields, & &1["name"])
 
-    if projection or Enum.all?(Map.keys(value), &(&1 in keys)) do
+    if Enum.all?(Map.keys(value), &(&1 in keys)) do
       each(fields, &field(&1, value, entities, path))
     else
       invalid(path ++ [:unknown_field])
@@ -131,12 +178,12 @@ defmodule DomainContract.Runtime do
   defp check(_, _, _, path), do: invalid(path)
 
   defp field(field, value, entities, path) do
-    key = Atom.to_string(field.name)
+    key = field["name"]
 
     cond do
-      field.optional and is_nil(value[key]) -> :ok
+      field["optional"] and is_nil(value[key]) -> :ok
       not Map.has_key?(value, key) -> invalid(path ++ [key])
-      true -> check(field.type, value[key], entities, path ++ [key])
+      true -> check(field["type"], value[key], entities, path ++ [key])
     end
   end
 

@@ -9,8 +9,8 @@ defmodule DomainContract do
   Keep these rules in the existing contract and its fragments; general documentation
   explains the architecture and links to the owning contract.
 
-  Compilation verifies declaration structure and references. Opt-in
-  `DomainContract.Runtime` validation checks input/output shapes, but neither
+  Compilation verifies declaration structure and references. `DomainContract.call/4`
+  validates input/output shapes through `DomainContract.Runtime`, but neither
   check proves compliance with prose guarantees. Implementations and behavioral tests
   must uphold those guarantees. A mismatch is a contract/implementation defect to
   resolve explicitly, not a reason to treat the description as optional commentary.
@@ -61,6 +61,41 @@ defmodule DomainContract do
   See `README.md` for provider, consumer and test-adapter examples.
   """
 
-  use Boundary, top_level?: true, type: :strict, deps: [Spark, Jason, Mix], exports: :all
+  use Boundary,
+    top_level?: true,
+    type: :strict,
+    deps: [Spark, Jason, Mix],
+    exports: [
+      Artifact,
+      Compatibility,
+      Context,
+      {Dsl, []},
+      Fragment,
+      Implementation,
+      Info,
+      Reference,
+      Runtime,
+      Source,
+      Stub,
+      Domain,
+      Entity,
+      Field,
+      Interface,
+      Operation,
+      DeclarationReference
+    ]
+
   use Spark.Dsl, default_extensions: [extensions: [DomainContract.Dsl]]
+
+  @doc """
+  Invokes a declared dependency against its immutable contract reference.
+
+  The adapter supplies a `DomainContract.Context` (or embeds it in
+  `:domain_contract`). Input and successful output are validated around dispatch;
+  application errors pass through unchanged. Library failures are
+  `{:error, {:invalid_contract, reason}}`. An adapter reports an absent dependency
+  as `{:error, {:unavailable, name}}`, including for optional dependencies.
+  """
+  def call(context, name, operation, input),
+    do: DomainContract.Port.call(context, name, operation, input)
 end

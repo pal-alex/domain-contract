@@ -4,3 +4,4 @@
 /cover/
 /erl_crash.dump
 /tmp/
+/.playwright-cli/

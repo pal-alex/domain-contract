@@ -9,6 +9,7 @@ defmodule DomainContract.Verifiers.Compile do
   @impl true
   def transform(dsl) do
     with {:ok, dsl} <- Compose.transform(dsl),
+         {:ok, dsl} <- DomainContract.Verifiers.References.transform(dsl),
          :ok <- Validate.verify(dsl) do
       {:ok, dsl}
     end

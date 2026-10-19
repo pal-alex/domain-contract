@@ -20,18 +20,31 @@ defmodule DomainContract.Info do
       entities: entities
     }
 
-    if domain.consumes == [] do
+    if domain.consumes == [] and domain.implements == [] do
       result
     else
       Map.merge(result, %{
-        format_version: 3,
-        consumes: domain.consumes |> Enum.map(&interface/1) |> Enum.sort_by(&{&1.kind, &1.name})
+        format_version: 4,
+        consumes: domain.consumes |> Enum.map(&reference/1) |> Enum.sort_by(&{&1.kind, &1.name}),
+        implements:
+          domain.implements |> Enum.map(&reference/1) |> Enum.sort_by(&{&1.kind, &1.name})
       })
     end
   end
 
   @doc "Canonical JSON, including sorted object keys, suitable for saved evidence and later diffs."
-  def json(module), do: module |> contract() |> ordered() |> Jason.encode!(pretty: true)
+  def json(module), do: module |> contract() |> encode()
+
+  @doc "Normalizes declarations or exports to string-keyed, transport-independent data."
+  def canonical(module) when is_atom(module), do: module |> contract() |> canonical()
+  def canonical(%{"interfaces" => _} = map), do: map
+  def canonical(map), do: map |> encode() |> Jason.decode!()
+
+  @doc false
+  def encode(value), do: value |> ordered() |> Jason.encode!(pretty: true)
+
+  defp reference(reference),
+    do: Map.take(reference, [:kind, :name, :version, :optional, :definition])
 
   defp interface(interface) do
     interface

@@ -3,15 +3,14 @@ defmodule DomainContract.Stub do
   alias DomainContract.Runtime
 
   def dispatcher(provider, handlers) do
-    contract = DomainContract.Info.contract(provider)
-    names = Enum.map(contract.interfaces, & &1.name)
+    names = Enum.map(DomainContract.Compatibility.provided(provider), & &1["name"])
 
-    fn name, operation, input ->
+    fn name, operation, input, _context ->
       with true <- name in names,
-           :ok <- Runtime.input(provider, operation, input),
+           :ok <- Runtime.input(provider, name, operation, input),
            {:ok, handler} <- Map.fetch(handlers, {name, operation}),
            {:ok, output} <- handler.(input),
-           :ok <- Runtime.output(provider, operation, output) do
+           :ok <- Runtime.output(provider, name, operation, output) do
         {:ok, output}
       else
         false -> {:error, :invalid_interface}

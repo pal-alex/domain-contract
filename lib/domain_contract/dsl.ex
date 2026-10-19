@@ -77,7 +77,33 @@ defmodule DomainContract.Dsl do
     schema: [name: [type: :atom, required: true], description: [type: :string]],
     entities: [
       interfaces: [@interface],
-      consumes: [%{@interface | name: :consumes}],
+      consumes: [
+        %Spark.Dsl.Entity{
+          name: :consumes,
+          target: DomainContract.Reference,
+          args: [:name],
+          schema: [
+            name: [type: :string, required: true],
+            version: [type: :pos_integer, required: true],
+            contract: [type: :any, required: true],
+            kind: [type: :any],
+            optional: [type: :boolean, default: false]
+          ]
+        }
+      ],
+      implements: [
+        %Spark.Dsl.Entity{
+          name: :implements,
+          target: DomainContract.Reference,
+          args: [:name],
+          schema: [
+            name: [type: :string, required: true],
+            version: [type: :pos_integer, required: true],
+            contract: [type: :any, required: true],
+            kind: [type: :any]
+          ]
+        }
+      ],
       entities: [@entity, @types]
     ]
   }

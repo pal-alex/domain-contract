@@ -1,168 +1,119 @@
 defmodule DomainContract.Compatibility do
-  @moduledoc "Checks declared consumer requirements against exported provider contracts."
+  @moduledoc """
+  Checks an exact deployment candidate against authoritative canonical artifacts.
 
-  @spec check([map()]) :: :ok | {:error, [map()]}
-  def check(contracts) do
+  The second argument is a list of immutable contract exports from the package
+  catalog. Definitions declared by candidates are also checked against that catalog.
+  References never define new contracts. Optional providers may be absent; present
+  providers must implement the exact referenced version and complete definition.
+  """
+  alias DomainContract.{Artifact, Info, Reference}
+
+  @spec check([module() | map()], [module() | map()]) :: :ok | {:error, [map()]}
+  def check(candidates, authorities \\ []) do
+    invalid =
+      for {source, index} <- Enum.with_index(candidates ++ authorities),
+          Artifact.validate(source) != :ok,
+          do: %{contract: index, reason: :invalid_artifact}
+
+    if invalid == [], do: check_valid(candidates, authorities), else: {:error, invalid}
+  end
+
+  defp check_valid(candidates, authorities) do
+    candidates = Enum.map(candidates, &Info.canonical/1)
+    authorities = Enum.map(authorities, &Info.canonical/1)
+    definitions = Enum.flat_map(authorities ++ candidates, &definitions/1)
+    catalog = Enum.group_by(definitions, &key/1)
+
     providers =
-      for contract <- contracts, interface <- contract["interfaces"], do: {contract, interface}
+      for candidate <- candidates, reference <- provided(candidate), do: {candidate, reference}
+
+    conflicts =
+      for {identity, values} <- catalog,
+          length(Enum.uniq(values)) > 1,
+          do: %{interface: identity, reason: :conflicting_contract}
 
     duplicates =
       providers
-      |> Enum.group_by(fn {_, interface} -> identity(interface) end)
+      |> Enum.group_by(fn {_, reference} -> reference["name"] end)
       |> Enum.flat_map(fn
         {_, [_]} -> []
-        {key, _} -> [%{interface: key, reason: :multiple_providers}]
+        {name, _} -> [%{interface: name, reason: :multiple_providers}]
       end)
 
     errors =
-      for consumer <- contracts,
-          required <- consumer["consumes"] || [],
-          error <- requirement(consumer, required, providers),
-          do: error
+      for candidate <- candidates,
+          reference <- (candidate["implements"] || []) ++ (candidate["consumes"] || []),
+          reason <- verify_reference(reference, catalog),
+          do: %{consumer: candidate["domain"], interface: key(reference), reason: reason}
 
-    case duplicates ++ errors do
+    dependencies =
+      for candidate <- candidates,
+          reference <- candidate["consumes"] || [],
+          reason <- dependency(reference, providers),
+          do: %{consumer: candidate["domain"], interface: key(reference), reason: reason}
+
+    case conflicts ++ duplicates ++ errors ++ dependencies do
       [] -> :ok
-      errors -> {:error, errors}
+      errors -> {:error, Enum.uniq(errors)}
     end
   end
 
-  defp identity(interface), do: {interface["kind"], interface["name"]}
+  @doc "Returns the complete public contracts supplied by a declaration."
+  def provided(source) do
+    contract = Info.canonical(source)
+    definitions(contract) ++ (contract["implements"] || [])
+  end
 
-  defp requirement(consumer, required, providers) do
-    case Enum.filter(providers, fn {_, provided} -> identity(provided) == identity(required) end) do
-      [{provider, provided}] ->
-        if provided["version"] >= required["version"] do
-          for expected <- required["operations"],
-              reason <- operation(consumer, expected, provider, provided),
-              do: %{
-                consumer: consumer["domain"],
-                interface: identity(required),
-                operation: expected["name"],
-                reason: reason
-              }
-        else
-          [
-            %{
-              consumer: consumer["domain"],
-              interface: identity(required),
-              reason: :version_too_old
-            }
-          ]
-        end
+  defp definitions(contract) do
+    for interface <- contract["interfaces"] do
+      %{
+        "kind" => interface["kind"],
+        "name" => interface["name"],
+        "version" => interface["version"],
+        "definition" =>
+          Reference.snapshot(interface, contract["entities"], contract["description"])
+      }
+    end
+  end
 
-      [] ->
-        [
-          %{
-            consumer: consumer["domain"],
-            interface: identity(required),
-            reason: :missing_provider
-          }
-        ]
+  defp key(reference), do: {reference["kind"], reference["name"], reference["version"]}
 
-      _ ->
+  defp verify_reference(reference, catalog) do
+    definition = reference["definition"]
+
+    cond do
+      not Reference.valid?(definition) ->
+        [:invalid_reference]
+
+      Enum.any?(["kind", "name", "version"], &(reference[&1] != definition["interface"][&1])) ->
+        [:invalid_reference]
+
+      Map.get(catalog, key(reference), []) == [] ->
+        [:unknown_contract]
+
+      Enum.any?(catalog[key(reference)], &(&1["definition"] != definition)) ->
+        [:conflicting_contract]
+
+      true ->
         []
     end
   end
 
-  defp operation(consumer, expected, provider, interface) do
-    case Enum.find(interface["operations"], &(&1["name"] == expected["name"])) do
-      nil ->
-        [:missing_operation]
+  defp dependency(reference, providers) do
+    case Enum.filter(providers, fn {_, provider} -> provider["name"] == reference["name"] end) do
+      [] ->
+        if(reference["optional"] == true, do: [], else: [:missing_provider])
 
-      actual ->
-        input =
-          subset?(
-            ["entity", expected["input"]],
-            consumer,
-            ["entity", actual["input"]],
-            provider,
-            :closed,
-            MapSet.new()
-          )
-
-        output =
-          (expected["optional_output"] or not actual["optional_output"]) and
-            subset?(
-              ["entity", actual["output"]],
-              provider,
-              ["entity", expected["output"]],
-              consumer,
-              :projection,
-              MapSet.new()
-            )
-
-        if(input, do: [], else: [:incompatible_input]) ++
-          if(output, do: [], else: [:incompatible_output])
-    end
-  end
-
-  defp subset?(_, _, "opaque", _, _, _), do: true
-  defp subset?("opaque", _, _, _, _, _), do: false
-  defp subset?(type, _, type, _, _, _) when is_binary(type), do: true
-  defp subset?("integer", _, "float", _, _, _), do: true
-  defp subset?("datetime", _, "string", _, _, _), do: true
-
-  defp subset?(type, _, "json_scalar", _, _, _)
-       when type in ~w(string integer float boolean datetime),
-       do: true
-
-  defp subset?(["enum", _], _, type, _, _, _) when type in ~w(string json_scalar), do: true
-
-  defp subset?(["enum", sent], _, ["enum", accepted], _, _, _),
-    do: Enum.all?(sent, &(&1 in accepted))
-
-  defp subset?(["entity", _], _, "map", _, _, _), do: true
-  defp subset?(["dictionary", _], _, "map", _, _, _), do: true
-  defp subset?(["variant", _], _, "map", _, _, _), do: true
-
-  defp subset?(["entity", left], sender, ["entity", right], receiver, mode, seen) do
-    key = {sender, left, receiver, right, mode}
-
-    if MapSet.member?(seen, key) do
-      true
-    else
-      fields?(
-        entity(sender, left),
-        sender,
-        entity(receiver, right),
-        receiver,
-        mode,
-        MapSet.put(seen, key)
-      )
-    end
-  end
-
-  defp subset?([container, left], sender, [container, right], receiver, mode, seen)
-       when container in ~w(list dictionary) do
-    subset?(left, sender, right, receiver, mode, seen)
-  end
-
-  defp subset?(["variant", left], sender, ["variant", right], receiver, mode, seen) do
-    Enum.all?(left, fn {tag, type} ->
-      Map.has_key?(right, tag) and subset?(type, sender, right[tag], receiver, mode, seen)
-    end)
-  end
-
-  defp subset?(_, _, _, _, _, _), do: false
-
-  defp entity(contract, name), do: Enum.find(contract["entities"], &(&1["name"] == name))
-
-  defp fields?(sent, sender, accepted, receiver, mode, seen) do
-    sent = Map.new(sent["fields"], &{&1["name"], &1})
-    accepted = Map.new(accepted["fields"], &{&1["name"], &1})
-
-    known = mode == :projection or Enum.all?(Map.keys(sent), &Map.has_key?(accepted, &1))
-
-    known and
-      Enum.all?(accepted, fn {name, field} ->
-        case sent[name] do
-          nil ->
-            field["optional"]
-
-          value ->
-            (field["optional"] or not value["optional"]) and
-              subset?(value["type"], sender, field["type"], receiver, mode, seen)
+      [{_, provider}] ->
+        cond do
+          key(provider) != key(reference) -> [:incorrect_version]
+          provider["definition"] != reference["definition"] -> [:conflicting_contract]
+          true -> []
         end
-      end)
+
+      _ ->
+        []
+    end
   end
 end

@@ -27,19 +27,17 @@ defmodule DomainContract.Verifiers.Compose do
     entities = expand(dsl, domain.entities)
 
     {interfaces, local_entities} = compose_interfaces(dsl, domain.interfaces)
-    {consumes, consumed_entities} = compose_interfaces(dsl, domain.consumes)
 
     references =
       domain.entities ++
-        Enum.flat_map(domain.interfaces ++ domain.consumes, & &1.operations)
+        Enum.flat_map(domain.interfaces, & &1.operations)
 
     dsl = Enum.reduce(references, dsl, &track_fragment/2)
 
     domain = %{
       domain
       | interfaces: interfaces,
-        consumes: consumes,
-        entities: entities ++ local_entities ++ consumed_entities
+        entities: entities ++ local_entities
     }
 
     {:ok, Transformer.replace_entity(dsl, [:contract], domain, fn _ -> true end)}

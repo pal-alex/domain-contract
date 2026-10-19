@@ -4,6 +4,7 @@ defmodule DomainContract.Domain do
     :name,
     :description,
     interfaces: [],
+    implements: [],
     consumes: [],
     entities: [],
     __spark_metadata__: nil

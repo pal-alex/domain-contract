@@ -27,8 +27,14 @@ defmodule DomainContract.Verifiers.Validate do
     duplicates(dsl, domain.entities, path ++ [:entity], & &1.name) ++
       duplicates(dsl, domain.interfaces, path ++ [:interface], &{&1.kind, &1.name}) ++
       duplicates(dsl, domain.consumes, path ++ [:consumes], &{&1.kind, &1.name}) ++
+      duplicates(
+        dsl,
+        domain.interfaces ++ domain.implements,
+        path ++ [:implements],
+        &{to_string(&1.kind), &1.name}
+      ) ++
       Enum.flat_map(domain.entities, &entity_errors(dsl, &1, names, path)) ++
-      Enum.flat_map(domain.interfaces ++ domain.consumes, &interface_errors(dsl, &1, names, path))
+      Enum.flat_map(domain.interfaces, &interface_errors(dsl, &1, names, path))
   end
 
   defp entity_errors(dsl, entity, names, parent) do

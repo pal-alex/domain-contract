@@ -1,73 +1,184 @@
 # DomainContract
 
-An application-independent Elixir library for owner-local domain declarations,
-provider/consumer compatibility checks, and validated call adapters and test stubs.
-It does not depend on Midva or SoloKeeper. Domain declarations remain in the owning
-application or plugin and are exported from that owner's exact revision.
+An application-independent Elixir library for public domain interfaces, exact contract
+references, implementation conformance and validated invocation. It depends on Spark
+and Jason, with no platform, transport, storage engine or runtime registry.
 
-Add the public Git dependency to the owning project's `mix.exs`:
+One contract defines one versioned public interface. Implementations reference that
+interface; consumers reference the same immutable definition. Schemas and descriptions
+stay in the authoritative declaration. Descriptions express behavioral obligations;
+structural checks do not prove business correctness, authorization or durability.
+
+Add `{:domain_contract, git: "https://github.com/pal-alex/domain-contract.git"}` to
+`mix.exs` and pin the exact published revision in the application's dependency lock.
+
+## Declare and reference contracts
 
 ```elixir
-{:domain_contract,
- git: "https://github.com/pal-alex/domain-contract.git",
- ref: "e0d128a446a4a4cde440c69818935e5cd4e72811"}
-```
-
-Then declare the product's contracts inside that project:
-
-```elixir
-defmodule Chat.Contract do
+defmodule Tasks.Contract do
   use DomainContract
 
-  domain :chat do
-    consumes :capability do
+  domain :tasks do
+    interface :capability do
       name "tasks"
-      version 1
+      version 2
 
       operation :get do
         input_entity :lookup do
           field :id, :string
         end
-
-        output_entity :summary do
+        output_entity :task do
           field :id, :string
-          field :status, :string
+          field :title, :string
         end
       end
     end
   end
 end
+
+defmodule Chat.Contract do
+  use DomainContract
+
+  domain :chat do
+    consumes "tasks", version: 2, contract: Tasks.Contract
+  end
+end
 ```
 
-`interface` declares a provided surface; `consumes` declares a required surface.
-Entities and operations can also be composed from `DomainContract.Fragment` modules.
-The compiler validates local schemas and references. Canonical exports without
-consumer declarations preserve their original format v1/v2; consumers use format v3.
+`contract:` accepts a declaration module, a canonical export map, or a JSON file
+containing an export or list of exports. Independent packages should reference the
+immutable JSON artifact, for example `contract: Path.expand("../contracts/tasks.json", __DIR__)`.
+They need no provider implementation module. JSON resources and source modules are
+tracked for recompilation. `kind:` disambiguates interfaces with the same name in a
+source bundle. Referenced versions must match exactly.
 
-Run `mix domain.contract Chat.Contract --output chat.json` in the owner project.
-Use `mix domain.export --output priv/domain_contracts.json` to export all root domains
-owned by the current application, excluding fragments and dependency applications.
-Run `mix domain.check tasks.json chat.json` once for the assembled candidate. The
-checker rejects missing/ambiguous providers, insufficient cumulative versions,
-missing operations, incompatible requests, and responses the consumer cannot handle.
-Consumer results are projections: additional provider fields are permitted; request
-fields remain closed. Optional fields and optional operation results are significant.
+`consumes` has no operation block or local schemas. A consumer may call every operation
+in the referenced interface. `optional: true` allows an absent provider during candidate
+validation; if present, it must conform exactly. Dispatch reports an absent dependency
+as `{:error, {:unavailable, name}}`. An undeclared dependency is always a contract error.
 
-`DomainContract.Port.call/5` validates a consumer's real request and successful result
-around an injected transport function. `DomainContract.Stub.dispatcher/2` validates
-test handlers against the provider declaration, so a stub cannot silently invent a
-different provider API. Error results pass through the existing transport mechanism.
-Domain-specific error schemas and behavioral guarantees remain owner responsibilities.
+A new public capability uses `interface`, entities and operations as above. Shared types
+and operations may be composed from `DomainContract.Fragment` modules using `types`
+and `operations`. Entities support primitives, entity references, lists, dictionaries,
+enums, variants and opaque payloads. See the module documentation for their semantics.
 
-Descriptions specify behavioral obligations. Schema checks do not prove replay,
-authorization, ownership, storage durability or Stop behavior; owner vertical tests
-and separately run system integration scenarios verify those guarantees.
+## Implement the complete interface
 
-Library checks: `mix deps.get`, `mix compile --warnings-as-errors`,
-`mix format --check-formatted`, and `mix test`.
+The default implementation binds to its authoritative declaration:
 
-For private Git dependencies, run `mix domain.vendor` in an authenticated build
-checkout before creating a Docker context. This materializes the exact locked Git
-revision in `vendor/domain_contract`, excluding credentials and Git metadata.
-The application's dependency definition can use that directory in build/source
-bundles and its pinned Git dependency in ordinary development checkouts.
+```elixir
+defmodule Tasks do
+  use DomainContract.Implementation, contract: Tasks.Contract
+
+  def call("get", %{"id" => id}, _context) do
+    {:ok, %{"id" => id, "title" => "Example"}}
+  end
+end
+```
+
+An independently packaged replacement references the existing contract:
+
+```elixir
+defmodule UserTasks.Contract do
+  use DomainContract
+
+  domain :user_tasks do
+    implements "tasks", version: 2,
+      contract: Path.expand("../contracts/tasks.json", __DIR__)
+  end
+end
+
+defmodule UserTasks do
+  use DomainContract.Implementation, contract: UserTasks.Contract
+
+  def call("get", %{"id" => id}, _context) do
+    {:ok, %{"id" => id, "title" => "User implementation"}}
+  end
+end
+```
+
+The compiler checks public `call/3` coverage of the whole interface. Literal operation
+heads and finite `operation in [...]` guards establish entry-point presence. A generic
+router can use the automatically derived `@contract_operations` guard instead of
+repeating a list. `contracts: [A.Contract, B.Contract]` binds a multi-interface provider.
+The callback body and behavioral correctness remain the implementation author's responsibility.
+
+`Implementation.check(provider, exported_declarations)` verifies loaded entry-point
+metadata against the package's declarations. The generated `__domain_contracts__/0`
+and `__domain_contract_operations__/0` contain immutable snapshots and checked entry
+points. Package tooling must include and verify these alongside the actual compiled
+entry point; a JSON declaration alone is not evidence of an implementation.
+`Implementation.check_beam(binary, exported_declarations)` checks the exact package
+entry point's persisted metadata and exports without loading or activating its code.
+
+## Invoke through a trusted context
+
+```elixir
+context = DomainContract.Context.new(Chat.Contract, "chat", fn
+  "tasks", operation, input, context -> Tasks.call(operation, input, context)
+  name, _operation, _input, _context -> {:error, {:unavailable, name}}
+end)
+
+DomainContract.call(context, "tasks", "get", %{"id" => "one"})
+```
+
+The runtime adapter binds the consumer and trusted caller when it creates the context.
+It must not derive caller identity from arbitrary request parameters. A platform context
+may embed this binding as `:domain_contract`; dispatch then receives the original outer
+context, preserving transport state and scoped execution metadata. Static maps, dynamic
+provider discovery and injected test dispatchers use the same API.
+
+`DomainContract.call/4` verifies the dependency and operation, validates the input,
+dispatches, and validates the complete successful output. Unknown fields are rejected
+on both sides; there are no consumer-specific projections. Application errors pass
+through unchanged. Library failures use `{:error, {:invalid_contract, reason}}`.
+Context construction validates and captures the consumer artifact once. Candidate-wide
+compatibility and digest checks belong to build/activation, not every business call.
+
+`Runtime.input/4` and `Runtime.output/4` validate an explicit provider interface from a
+module or export. Their three-argument forms support declarations with unique operation
+names. `Stub.dispatcher/2` creates a four-argument dispatcher with the same validation;
+use it with `Context.new/3` and `DomainContract.call/4` in tests.
+
+Provider discovery, authorization, isolation, plugin lifecycle, storage namespace ownership,
+transport and execution/recovery guarantees remain runtime/SDK responsibilities.
+DomainContract creates no processes or registries. A shared BEAM VM is trusted
+infrastructure, not a security sandbox. Runtime adapters must verify storage compatibility
+before restoring a previous provider; replacing code does not roll back persistent data.
+
+## Export and check exact candidates
+
+`Info.contract/1` returns deterministic declarations; `Info.json/1` exports them.
+Authoritative declarations retain format v1/v2. References use format v4 and embed an
+interface snapshot, its reachable entities, the domain description and a SHA-256 digest.
+Descriptions at every level participate in this identity. Legacy v3 consumer projections are rejected. A digest identifies an
+artifact; it does not authenticate its origin. The package catalog supplies trusted,
+immutable authoritative definitions, independently of the candidate implementation.
+
+```sh
+mix domain.contract Tasks.Contract --output tasks.json
+mix domain.export --output priv/domain_contracts.json
+mix domain.check --authority tasks.json candidate.json consumer.json
+```
+
+`domain.export` exports only the current application's root declarations, without
+starting it. `Compatibility.check(candidates, authorities)` rejects unknown contracts,
+missing required providers, duplicate providers, conflicting definitions and incorrect
+versions. Optional providers may be absent. Candidate definitions are checked against
+the supplied authorities; references cannot invent contracts. Include exact packaged
+revisions and their authoritative exports, not unrelated local source trees. SDK tooling
+derives platform dependency metadata and verifies package/runtime compatibility.
+
+DomainContract exports public modules explicitly through Boundary. Contract boundaries
+should depend on DomainContract and Spark without inheriting implementation services.
+Implementation boundaries expose only their public entry points; cross-domain calls
+use `DomainContract.call/4`. Compile with warnings as errors to enforce Boundary.
+
+Run `mix verify` for formatting, strict compilation and tests, as normal CI does.
+Tests include interchangeable implementations, package metadata conformance, full
+interface coverage, immutable file references and negative architecture cases.
+
+For private Git dependencies, run `mix domain.vendor` in an authenticated build checkout
+before creating a Docker context. It materializes the exact locked revision in
+`vendor/domain_contract`, excluding credentials and Git metadata. Applications may use
+that directory in source bundles and their pinned Git dependency in ordinary checkouts.
