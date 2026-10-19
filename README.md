@@ -126,6 +126,9 @@ heads and finite `operation in [...]` guards establish entry-point presence. A g
 router can use the automatically derived `@contract_operations` guard instead of
 repeating a list; compiler-expanded Erlang equality/boolean guards are also recognized.
 `contracts: [A.Contract, B.Contract]` binds a multi-interface provider.
+Options may read previously assigned module attributes, including
+`contracts: @manifest["domain_contracts"]`. They are evaluated in module-body order
+and pass the same schema, snapshot and operation-coverage checks as literal options.
 The callback body and behavioral correctness remain the implementation author's responsibility.
 
 `Implementation.check(provider, exported_declarations)` verifies loaded entry-point

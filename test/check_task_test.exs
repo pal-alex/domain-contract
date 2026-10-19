@@ -167,6 +167,9 @@ defmodule DomainContract.CheckTaskTest do
         end
       end
     end
+    """)
+
+    contract_source = """
     defmodule BoundaryProbe.Contract do
       use DomainContract
       domain :boundary_probe do
@@ -182,8 +185,15 @@ defmodule DomainContract.CheckTaskTest do
         end
       end
     end
+    """
+
+    contract_path = Path.join(root, "lib/contract.ex")
+    File.write!(contract_path, contract_source)
+
+    File.write!(Path.join(root, "lib/provider.ex"), """
     defmodule BoundaryProbe.Provider do
-      use DomainContract.Implementation, contract: BoundaryProbe.Contract
+      @contract BoundaryProbe.Contract
+      use DomainContract.Implementation, contract: @contract
       def call(operation, _, _) when operation in @contract_operations, do: {:ok, []}
     end
     """)
@@ -192,5 +202,30 @@ defmodule DomainContract.CheckTaskTest do
     assert status == 0, output
     {output, status} = System.cmd("mix", ["compile", "--warnings-as-errors"], options)
     assert status == 0, output
+
+    # The contract's exports stay unchanged. A body change must still rebuild
+    # the provider's captured snapshots and automatically generated guard.
+    Process.sleep(1100)
+
+    File.write!(
+      contract_path,
+      String.replace(
+        contract_source,
+        "version 1",
+        "version 1\noperation :added, input: :input, output: :input"
+      )
+    )
+
+    {output, status} = System.cmd("mix", ["compile", "--warnings-as-errors"], options)
+    assert status == 0, output
+
+    beam =
+      Path.join(root, "_build/dev/lib/boundary_probe/ebin/Elixir.BoundaryProbe.Provider.beam")
+
+    assert {:ok, {_, chunks}} = :beam_lib.chunks(String.to_charlist(beam), [:attributes])
+    [metadata] = chunks[:attributes][:domain_contract_implementation]
+    assert metadata.operations == ["added", "read"]
+    assert [contract] = metadata.contracts
+    assert Enum.map(hd(contract["interfaces"])["operations"], & &1["name"]) == ["added", "read"]
   end
 end

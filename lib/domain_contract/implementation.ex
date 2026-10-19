@@ -16,29 +16,33 @@ defmodule DomainContract.Implementation do
   @callback call(String.t(), term(), term()) :: {:ok, term()} | {:error, term()}
 
   defmacro __using__(options) do
-    {options, _} = Code.eval_quoted(options, [], __CALLER__)
-    sources = options[:contracts] || List.wrap(Keyword.fetch!(options, :contract))
-    contracts = Enum.map(sources, &Info.canonical/1)
-
-    case Compatibility.validate(contracts) do
-      :ok ->
-        :ok
-
-      {:error, errors} ->
-        raise ArgumentError, "invalid implementation declarations: #{inspect(errors)}"
-    end
-
-    operations = operations(contracts)
-    # A compile-time remote call tracks declaration body changes, not only exports.
-    dependencies =
-      for source <- sources, is_atom(source), do: quote(do: unquote(source).entities([:contract]))
-
     quote do
-      unquote_splicing(dependencies)
+      # Evaluate options in module-body order, after preceding attributes have
+      # been assigned. Eager macro-time evaluation cannot read those attributes.
+      options = unquote(options)
+      sources = options[:contracts] || List.wrap(Keyword.fetch!(options, :contract))
+
+      for source <- sources, is_atom(source) do
+        Code.ensure_compiled!(source)
+        # Keep a literal compile-time call so Mix tracks declaration body changes
+        # even when the source module arrives through a computed attribute.
+        Code.eval_quoted({{:., [], [source, :entities]}, [], [[:contract]]}, [], __ENV__)
+      end
+
+      contracts = Enum.map(sources, &DomainContract.Info.canonical/1)
+
+      case DomainContract.Compatibility.validate(contracts) do
+        :ok ->
+          :ok
+
+        {:error, errors} ->
+          raise ArgumentError, "invalid implementation declarations: #{inspect(errors)}"
+      end
+
       @behaviour DomainContract.Implementation
       Module.register_attribute(__MODULE__, :domain_contract_call_operations, accumulate: true)
-      @domain_contract_snapshots unquote(Macro.escape(contracts))
-      @contract_operations unquote(operations)
+      @domain_contract_snapshots contracts
+      @contract_operations DomainContract.Implementation.operations(contracts)
       @on_definition {DomainContract.Implementation, :on_definition}
       @before_compile DomainContract.Implementation
     end

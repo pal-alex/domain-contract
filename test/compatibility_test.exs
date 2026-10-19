@@ -220,6 +220,30 @@ defmodule DomainContract.CompatibilityTest do
     assert_raise FunctionClauseError, fn -> module.call("absent", %{}, nil) end
   end
 
+  test "implementation options can read previously declared module attributes" do
+    for {declaration, options} <- [
+          {"@manifest %{\"domain_contracts\" => [DomainContract.Info.canonical(#{inspect(Public)})]}",
+           "contracts: @manifest[\"domain_contracts\"]"},
+          {"@contract #{inspect(Public)}", "contract: @contract"}
+        ] do
+      module = Module.concat(__MODULE__, "Attribute#{System.unique_integer([:positive])}")
+
+      [{^module, beam}] =
+        Code.compile_string("""
+        defmodule #{inspect(module)} do
+          #{declaration}
+          use DomainContract.Implementation, #{options}
+          def call(operation, _, _) when operation in @contract_operations, do: {:error, :business_failure}
+        end
+        """)
+
+      assert :ok = Implementation.check(module, [Public])
+      assert :ok = Implementation.check_beam(beam, [Public])
+      assert module.__domain_contracts__() == [Info.canonical(Public)]
+      assert module.__domain_contract_operations__() == ["count", "get"]
+    end
+  end
+
   test "expanded negative and contradictory guards cannot supply operation coverage" do
     operation = Macro.var(:operation, nil)
 
