@@ -9,14 +9,40 @@ defmodule DomainContract.Compatibility do
   """
   alias DomainContract.{Artifact, Info, Reference}
 
-  @spec check([module() | map()], [module() | map()]) :: :ok | {:error, [map()]}
-  def check(candidates, authorities \\ []) do
+  @doc """
+  Validates independent package declarations without requiring installed providers.
+
+  Embedded snapshots supply their complete definitions for this structural check.
+  Conflicting definitions of one identity/version are rejected, including conflicts
+  between implemented and consumed references. This neither authenticates a snapshot's
+  origin nor selects providers. Deployment activation still uses `check/2` with the
+  immutable authoritative catalog and the complete selected candidate.
+
+  Canonical maps are checked without loading or executing any provider code.
+  """
+  @spec validate([module() | map()]) :: :ok | {:error, [map()]}
+  def validate(declarations) do
     invalid =
-      for {source, index} <- Enum.with_index(candidates ++ authorities),
+      for {source, index} <- Enum.with_index(declarations),
           Artifact.validate(source) != :ok,
           do: %{contract: index, reason: :invalid_artifact}
 
-    if invalid == [], do: check_valid(candidates, authorities), else: {:error, invalid}
+    if invalid == [] do
+      declarations
+      |> Enum.map(&Info.canonical/1)
+      |> Enum.flat_map(fn contract ->
+        definitions(contract) ++ (contract["implements"] || []) ++ (contract["consumes"] || [])
+      end)
+      |> conflicts()
+      |> result()
+    else
+      {:error, invalid}
+    end
+  end
+
+  @spec check([module() | map()], [module() | map()]) :: :ok | {:error, [map()]}
+  def check(candidates, authorities \\ []) do
+    with :ok <- validate(candidates ++ authorities), do: check_valid(candidates, authorities)
   end
 
   defp check_valid(candidates, authorities) do
@@ -27,11 +53,6 @@ defmodule DomainContract.Compatibility do
 
     providers =
       for candidate <- candidates, reference <- provided(candidate), do: {candidate, reference}
-
-    conflicts =
-      for {identity, values} <- catalog,
-          length(Enum.uniq(values)) > 1,
-          do: %{interface: identity, reason: :conflicting_contract}
 
     duplicates =
       providers
@@ -53,11 +74,17 @@ defmodule DomainContract.Compatibility do
           reason <- dependency(reference, providers),
           do: %{consumer: candidate["domain"], interface: key(reference), reason: reason}
 
-    case conflicts ++ duplicates ++ errors ++ dependencies do
-      [] -> :ok
-      errors -> {:error, Enum.uniq(errors)}
-    end
+    result(duplicates ++ errors ++ dependencies)
   end
+
+  defp conflicts(references) do
+    for {identity, values} <- Enum.group_by(references, &key/1),
+        length(Enum.uniq_by(values, & &1["definition"])) > 1,
+        do: %{interface: identity, reason: :conflicting_contract}
+  end
+
+  defp result([]), do: :ok
+  defp result(errors), do: {:error, Enum.uniq(errors)}
 
   @doc "Returns the complete public contracts supplied by a declaration."
   def provided(source) do
@@ -80,24 +107,9 @@ defmodule DomainContract.Compatibility do
   defp key(reference), do: {reference["kind"], reference["name"], reference["version"]}
 
   defp verify_reference(reference, catalog) do
-    definition = reference["definition"]
-
-    cond do
-      not Reference.valid?(definition) ->
-        [:invalid_reference]
-
-      Enum.any?(["kind", "name", "version"], &(reference[&1] != definition["interface"][&1])) ->
-        [:invalid_reference]
-
-      Map.get(catalog, key(reference), []) == [] ->
-        [:unknown_contract]
-
-      Enum.any?(catalog[key(reference)], &(&1["definition"] != definition)) ->
-        [:conflicting_contract]
-
-      true ->
-        []
-    end
+    # validate/1 has checked snapshot integrity and equality for this identity.
+    # Presence in this separately supplied catalog establishes a known contract.
+    if Map.has_key?(catalog, key(reference)), do: [], else: [:unknown_contract]
   end
 
   defp dependency(reference, providers) do
@@ -107,6 +119,7 @@ defmodule DomainContract.Compatibility do
 
       [{_, provider}] ->
         cond do
+          provider["kind"] != reference["kind"] -> [:incorrect_identity]
           key(provider) != key(reference) -> [:incorrect_version]
           provider["definition"] != reference["definition"] -> [:conflicting_contract]
           true -> []

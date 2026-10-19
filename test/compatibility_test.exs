@@ -94,6 +94,54 @@ defmodule DomainContract.CompatibilityTest do
     assert :ok = Compatibility.check([Public, Consumer])
   end
 
+  test "independent packages validate complete snapshots without providers or an installed authority catalog" do
+    for declaration <- [Consumer, OptionalConsumer, AlternativeContract] do
+      artifact = Info.canonical(declaration)
+      assert :ok = Compatibility.validate([artifact])
+    end
+
+    assert :ok =
+             Compatibility.validate([
+               Info.canonical(Consumer),
+               Info.canonical(AlternativeContract)
+             ])
+
+    assert {:error, errors} = Compatibility.check([Consumer, AlternativeContract])
+    assert Enum.any?(errors, &(&1.reason == :unknown_contract))
+    assert :ok = Compatibility.check([Consumer, AlternativeContract], [Public])
+    assert {:error, [%{reason: :missing_provider}]} = Compatibility.check([Consumer], [Public])
+  end
+
+  test "independent package validation rejects conflicting embedded snapshots and corrupt declarations" do
+    changed =
+      Map.put(Info.canonical(Public), "description", "Different authoritative obligations.")
+
+    alternative =
+      put_in(
+        Info.canonical(AlternativeContract),
+        ["implements", Access.at(0), "definition"],
+        Reference.resolve(changed, "tasks", 2)
+      )
+
+    assert :ok = Compatibility.validate([alternative])
+
+    assert {:error, [%{reason: :conflicting_contract}]} =
+             Compatibility.validate([Consumer, alternative])
+
+    corrupted =
+      put_in(
+        Info.canonical(Consumer),
+        ["consumes", Access.at(0), "definition", "digest"],
+        "invalid"
+      )
+
+    assert {:error, [%{contract: 0, reason: :invalid_artifact}]} =
+             Compatibility.validate([corrupted])
+
+    assert {:error, [%{reason: :conflicting_contract}]} =
+             Compatibility.validate([Public, alternative])
+  end
+
   test "both implementations use the same reference, package metadata, and unchanged consumer" do
     for {provider, declaration} <- [{Default, Public}, {Alternative, AlternativeContract}] do
       assert :ok = Implementation.check(provider, [declaration])
@@ -180,6 +228,13 @@ defmodule DomainContract.CompatibilityTest do
 
     assert {:error, {:unavailable, "tasks"}} =
              DomainContract.call(unavailable, "tasks", "count", %{})
+  end
+
+  test "a provider with the same name/version but a different kind has the wrong identity" do
+    provider = put_in(Info.canonical(Public), ["interfaces", Access.at(0), "kind"], "other")
+
+    assert {:error, [%{reason: :incorrect_identity}]} =
+             Compatibility.check([provider, Consumer], [Public])
   end
 
   test "duplicate providers and conflicting identities are rejected before activation" do

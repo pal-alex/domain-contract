@@ -110,6 +110,11 @@ points. Package tooling must include and verify these alongside the actual compi
 entry point; a JSON declaration alone is not evidence of an implementation.
 `Implementation.check_beam(binary, exported_declarations)` checks the exact package
 entry point's persisted metadata and exports without loading or activating its code.
+`Compatibility.validate(exported_declarations)` checks the package's complete embedded
+snapshots and rejects conflicting definitions without requiring installed providers or
+an authority catalog. It does not authenticate their origin or establish availability;
+deployment checks still compare the selected candidate with independent authoritative
+artifacts through `Compatibility.check/2`.
 
 ## Invoke through a trusted context
 

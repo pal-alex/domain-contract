@@ -19,6 +19,15 @@ defmodule DomainContract.Implementation do
     {options, _} = Code.eval_quoted(options, [], __CALLER__)
     sources = options[:contracts] || List.wrap(Keyword.fetch!(options, :contract))
     contracts = Enum.map(sources, &Info.canonical/1)
+
+    case Compatibility.validate(contracts) do
+      :ok ->
+        :ok
+
+      {:error, errors} ->
+        raise ArgumentError, "invalid implementation declarations: #{inspect(errors)}"
+    end
+
     operations = operations(contracts)
     # A compile-time remote call tracks declaration body changes, not only exports.
     dependencies =
@@ -171,7 +180,7 @@ defmodule DomainContract.Implementation do
   end
 
   defp valid_metadata?(contracts, operations) when is_list(contracts) and is_list(operations) do
-    Enum.all?(contracts, &(DomainContract.Artifact.validate(&1) == :ok)) and
+    Compatibility.validate(contracts) == :ok and
       Enum.all?(operations, &is_binary/1)
   end
 
