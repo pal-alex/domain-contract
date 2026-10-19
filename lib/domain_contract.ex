@@ -20,6 +20,12 @@ defmodule DomainContract do
   operation. Field types reference domain entities with `{:entity, name}` and compose
   lists with `{:list, type}` or dictionaries with `{:dictionary, type}`.
 
+  `{:open_entity, name}` explicitly permits additional string-keyed fields whose
+  values are opaque owner extensions. Requiredness and types of all declared fields
+  still apply, and nested ordinary entities remain closed. Use it only when the
+  public contract permits extensibility; ordinary entity references reject unknown
+  fields. Open entity uses require format v5, including when nested in entity fields.
+
   Use `{:enum, ["queued", "running"]}` for a closed set of strings and
   `{:variant, %{"event" => {:entity, :event}, "result" => :opaque}}` for a tagged
   value with exactly `"type"` and `"data"` keys. The selected tag determines the

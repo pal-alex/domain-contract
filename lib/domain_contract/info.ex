@@ -89,20 +89,21 @@ defmodule DomainContract.Info do
         end)
       end) or
         Enum.any?(definition["entities"], fn entity ->
-          Enum.any?(entity["fields"], &null_type?(&1["type"]))
+          Enum.any?(entity["fields"], &v5_type?(&1["type"]))
         end)
     end)
   end
 
-  defp null_type?("null"), do: true
+  defp v5_type?("null"), do: true
+  defp v5_type?(["open_entity", _]), do: true
 
-  defp null_type?(["variant", choices]),
-    do: Enum.any?(choices, fn {_, type} -> null_type?(type) end)
+  defp v5_type?(["variant", choices]),
+    do: Enum.any?(choices, fn {_, type} -> v5_type?(type) end)
 
-  defp null_type?([container, type]) when container in ["list", "dictionary"],
-    do: null_type?(type)
+  defp v5_type?([container, type]) when container in ["list", "dictionary"],
+    do: v5_type?(type)
 
-  defp null_type?(_), do: false
+  defp v5_type?(_), do: false
 
   defp entity(entity) do
     entity

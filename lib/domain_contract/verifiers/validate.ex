@@ -121,7 +121,10 @@ defmodule DomainContract.Verifiers.Validate do
   end
 
   defp valid_type?(type, _names) when type in @primitives, do: true
-  defp valid_type?({:entity, name}, names), do: MapSet.member?(names, name)
+
+  defp valid_type?({kind, name}, names) when kind in [:entity, :open_entity],
+    do: MapSet.member?(names, name)
+
   defp valid_type?({:list, type}, names), do: valid_type?(type, names)
   defp valid_type?({:dictionary, type}, names), do: valid_type?(type, names)
 

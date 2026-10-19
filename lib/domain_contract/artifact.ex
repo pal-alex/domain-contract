@@ -88,7 +88,7 @@ defmodule DomainContract.Artifact do
   defp references?(_, _), do: false
 
   defp type?(type, _) when type in @primitives, do: true
-  defp type?(["entity", name], names), do: name in names
+  defp type?([kind, name], names) when kind in ["entity", "open_entity"], do: name in names
   defp type?([kind, type], names) when kind in ~w(list dictionary), do: type?(type, names)
 
   defp type?(["enum", values], _) when is_list(values),

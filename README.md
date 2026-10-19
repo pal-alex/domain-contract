@@ -86,6 +86,23 @@ fields. Use the actual business shape; opaque payloads are for deliberately unin
 foreign values. Typed roots and `:null` require export format v5, including when
 referenced by another declaration. Existing declarations keep their original exports.
 
+For an explicitly extensible public descriptor, use `{:open_entity, :descriptor}`
+instead of `{:entity, :descriptor}`, for example:
+
+```elixir
+operation :list, input: :empty_request,
+  output_type: {:list, {:open_entity, :descriptor}}
+```
+
+All declared fields keep their types and requiredness. Additional string-keyed fields
+are preserved and their values are intentionally opaque; the contract owner must
+explicitly permit those extensions. Nested ordinary entity references remain closed.
+This supports flat extensible metadata without moving extensions into an envelope or
+weakening known fields. The type also works inside lists, dictionaries and variants
+and requires format v5, including when used only in entity fields. Older readers that
+do not recognize the type reject the artifact. Ordinary entity behavior and exports
+remain unchanged.
+
 ## Implement the complete interface
 
 The default implementation binds to its authoritative declaration:
@@ -184,7 +201,8 @@ before restoring a previous provider; replacing code does not roll back persiste
 `Info.contract/1` returns deterministic declarations; `Info.json/1` exports them.
 Existing authoritative declarations retain format v1/v2. References use format v4 and embed an
 interface snapshot, its reachable entities, the domain description and a SHA-256 digest.
-Declarations containing or referencing typed roots or the nil-only type use format v5.
+Declarations containing or referencing typed roots, open entity uses or the nil-only
+type use format v5.
 Descriptions at every level participate in this identity. Legacy v3 consumer projections are rejected. A digest identifies an
 artifact; it does not authenticate its origin. The package catalog supplies trusted,
 immutable authoritative definitions, independently of the candidate implementation.

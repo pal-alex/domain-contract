@@ -101,7 +101,7 @@ defmodule DomainContract.Reference do
     end
   end
 
-  defp references(["entity", name]), do: [name]
+  defp references([kind, name]) when kind in ["entity", "open_entity"], do: [name]
 
   defp references([container, type]) when container in ["list", "dictionary"],
     do: references(type)

@@ -169,12 +169,18 @@ defmodule DomainContract.Runtime do
     end)
   end
 
-  defp check(["entity", name], value, entities, path)
-       when is_map(value) do
+  defp check([kind, name], value, entities, path)
+       when kind in ["entity", "open_entity"] and is_map(value) do
     fields = entities[name]["fields"]
     keys = Enum.map(fields, & &1["name"])
 
-    if Enum.all?(Map.keys(value), &(&1 in keys)) do
+    valid_keys? =
+      case kind do
+        "entity" -> Enum.all?(Map.keys(value), &(&1 in keys))
+        "open_entity" -> Enum.all?(Map.keys(value), &is_binary/1)
+      end
+
+    if valid_keys? do
       each(fields, &field(&1, value, entities, path))
     else
       invalid(path ++ [:unknown_field])
