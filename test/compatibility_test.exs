@@ -230,11 +230,52 @@ defmodule DomainContract.CompatibilityTest do
              DomainContract.call(unavailable, "tasks", "count", %{})
   end
 
-  test "a provider with the same name/version but a different kind has the wrong identity" do
+  test "a provider with the same name/version but a different kind does not satisfy the dependency" do
     provider = put_in(Info.canonical(Public), ["interfaces", Access.at(0), "kind"], "other")
 
-    assert {:error, [%{reason: :incorrect_identity}]} =
+    assert {:error, [%{reason: :missing_provider}]} =
              Compatibility.check([provider, Consumer], [Public])
+
+    assert :ok = Compatibility.check([provider, OptionalConsumer], [Public])
+  end
+
+  test "same-named distinct interfaces coexist while each consumer binds one exact kind" do
+    other =
+      Info.canonical(Public)
+      |> put_in(["interfaces", Access.at(0), "kind"], "other")
+      |> update_in(["entities", Access.all(), "fields", Access.all()], fn field ->
+        if field["name"] == "status", do: Map.put(field, "type", "integer"), else: field
+      end)
+
+    reference =
+      Info.canonical(Consumer)["consumes"]
+      |> hd()
+      |> Map.put("kind", "other")
+      |> Map.put("definition", Reference.resolve(other, "tasks", 2, "other"))
+
+    consumer = put_in(Info.canonical(Consumer), ["consumes"], [reference])
+    assert :ok = Compatibility.check([Public, other, Consumer, consumer], [Public, other])
+
+    dispatch = fn name, operation, input, context ->
+      {:ok, bound} = DomainContract.Runtime.dependency(context.consumer, name)
+
+      if bound["kind"] == "other",
+        do: {:ok, %{"id" => input["id"], "status" => 7}},
+        else: Default.call(operation, input, context)
+    end
+
+    assert {:ok, %{"status" => "started"}} =
+             DomainContract.call(Context.new(Consumer, "chat", dispatch), "tasks", "get", %{
+               "id" => "one"
+             })
+
+    assert {:ok, %{"status" => 7}} =
+             DomainContract.call(Context.new(consumer, "chat", dispatch), "tasks", "get", %{
+               "id" => "one"
+             })
+
+    ambiguous = update_in(Info.canonical(Consumer), ["consumes"], &(&1 ++ [reference]))
+    assert {:error, :invalid_artifact} = DomainContract.Artifact.validate(ambiguous)
   end
 
   test "duplicate providers and conflicting identities are rejected before activation" do

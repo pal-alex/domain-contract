@@ -26,7 +26,7 @@ defmodule DomainContract.Verifiers.Validate do
 
     duplicates(dsl, domain.entities, path ++ [:entity], & &1.name) ++
       duplicates(dsl, domain.interfaces, path ++ [:interface], &{&1.kind, &1.name}) ++
-      duplicates(dsl, domain.consumes, path ++ [:consumes], &{&1.kind, &1.name}) ++
+      duplicates(dsl, domain.consumes, path ++ [:consumes], & &1.name) ++
       duplicates(
         dsl,
         domain.interfaces ++ domain.implements,

@@ -61,7 +61,9 @@ defmodule DomainContract.Artifact do
   end
 
   defp references?(references, optional?) when is_list(references) do
-    unique?(references, &{&1["kind"], &1["name"]}) and
+    unique?(references, fn reference ->
+      if optional?, do: reference["name"], else: {reference["kind"], reference["name"]}
+    end) and
       Enum.all?(references, fn reference ->
         definition = reference["definition"]
 

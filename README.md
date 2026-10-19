@@ -52,6 +52,12 @@ They need no provider implementation module. JSON resources and source modules a
 tracked for recompilation. `kind:` disambiguates interfaces with the same name in a
 source bundle. Referenced versions must match exactly.
 
+Interface identity includes `kind` and `name`. Distinct kinds with the same name
+may coexist in a deployment; each consumer context binds exactly one kind for that
+invocation name. Runtime adapters select providers by the full reference, including
+version and snapshot, rather than by a matching name/version alone. Target selection
+remains the runtime's responsibility; the library has no server or runner concept.
+
 `consumes` has no operation block or local schemas. A consumer may call every operation
 in the referenced interface. `optional: true` allows an absent provider during candidate
 validation; if present, it must conform exactly. Dispatch reports an absent dependency

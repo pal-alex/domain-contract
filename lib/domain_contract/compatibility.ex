@@ -56,7 +56,7 @@ defmodule DomainContract.Compatibility do
 
     duplicates =
       providers
-      |> Enum.group_by(fn {_, reference} -> reference["name"] end)
+      |> Enum.group_by(fn {_, reference} -> identity(reference) end)
       |> Enum.flat_map(fn
         {_, [_]} -> []
         {name, _} -> [%{interface: name, reason: :multiple_providers}]
@@ -105,6 +105,7 @@ defmodule DomainContract.Compatibility do
   end
 
   defp key(reference), do: {reference["kind"], reference["name"], reference["version"]}
+  defp identity(reference), do: {reference["kind"], reference["name"]}
 
   defp verify_reference(reference, catalog) do
     # validate/1 has checked snapshot integrity and equality for this identity.
@@ -113,13 +114,12 @@ defmodule DomainContract.Compatibility do
   end
 
   defp dependency(reference, providers) do
-    case Enum.filter(providers, fn {_, provider} -> provider["name"] == reference["name"] end) do
+    case Enum.filter(providers, fn {_, provider} -> identity(provider) == identity(reference) end) do
       [] ->
         if(reference["optional"] == true, do: [], else: [:missing_provider])
 
       [{_, provider}] ->
         cond do
-          provider["kind"] != reference["kind"] -> [:incorrect_identity]
           key(provider) != key(reference) -> [:incorrect_version]
           provider["definition"] != reference["definition"] -> [:conflicting_contract]
           true -> []
