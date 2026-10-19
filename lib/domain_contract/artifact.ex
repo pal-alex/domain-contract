@@ -3,6 +3,48 @@ defmodule DomainContract.Artifact do
   alias DomainContract.{Info, Reference}
   @primitives ~w(string integer float boolean datetime map opaque json_scalar null)
 
+  @doc """
+  Reads a compiled declaration's canonical export without loading its module.
+
+  Returns `{:ok, artifact}`, `{:error, :not_contract}` for a BEAM without an
+  export, or `{:error, :invalid_artifact | :invalid_beam}` for malformed data.
+  The export includes composed schemas, references and behavioral descriptions.
+  Fragments and implementation entry points do not acquire a declaration export.
+
+  This checks packaged data, not its authority. The adapter must establish source
+  provenance and compare implementations against independently trusted originals.
+  """
+  def from_beam(beam) when is_binary(beam) do
+    case :beam_lib.chunks(beam, [:attributes, :exports]) do
+      {:ok, {_module, chunks}} ->
+        read_export(chunks)
+
+      _ ->
+        {:error, :invalid_beam}
+    end
+  rescue
+    _ -> {:error, :invalid_beam}
+  end
+
+  def from_beam(_beam), do: {:error, :invalid_beam}
+
+  defp read_export(chunks) do
+    case Keyword.get_values(chunks[:attributes], :domain_contract_artifact) do
+      [] ->
+        {:error, :not_contract}
+
+      [[artifact]] when is_map(artifact) ->
+        if Map.has_key?(artifact, "interfaces") and
+             Enum.all?([{:entities, 1}, {:spark_dsl_config, 0}], &(&1 in chunks[:exports])) and
+             validate(artifact) == :ok,
+           do: {:ok, artifact},
+           else: {:error, :invalid_artifact}
+
+      _ ->
+        {:error, :invalid_artifact}
+    end
+  end
+
   @doc "Rejects malformed schemas, unresolved types, legacy projections and inconsistent references."
   def validate(source) do
     contract = Info.canonical(source)

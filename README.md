@@ -155,6 +155,14 @@ points. Package tooling must include and verify these alongside the actual compi
 entry point; a JSON declaration alone is not evidence of an implementation.
 `Implementation.check_beam(binary, exported_declarations)` checks the exact package
 entry point's persisted metadata and exports without loading or activating its code.
+`Artifact.from_beam(binary)` reads a compiled `use DomainContract` declaration's
+canonical export without loading its module, dependencies or `on_load` callbacks.
+The export includes composed schemas, references and domain obligations, exactly
+as `Info.canonical/1` does. Fragments and plain implementation entry points return
+`{:error, :not_contract}`; malformed exports or binaries fail explicitly. This
+supports offline package evidence and does not establish which source is trusted.
+Package catalogs still distinguish original owner declarations from consumers and
+replacement implementations.
 `Compatibility.validate(exported_declarations)` checks the package's complete embedded
 snapshots and rejects conflicting definitions without requiring installed providers or
 an authority catalog. It does not authenticate their origin or establish availability;

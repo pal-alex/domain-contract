@@ -7,8 +7,12 @@ defmodule DomainContract.Info do
   alias Spark.Dsl.Extension
 
   @doc "Returns structure and descriptions, with named lists sorted independently of declaration order."
-  def contract(module) do
+  def contract(module) when is_atom(module) do
     [domain] = Extension.get_entities(module, [:contract])
+    contract(domain)
+  end
+
+  def contract(%DomainContract.Domain{} = domain) do
     entities = domain.entities |> Enum.map(&entity/1) |> Enum.sort_by(& &1.name)
 
     result = %{
