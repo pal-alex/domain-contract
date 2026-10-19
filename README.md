@@ -68,6 +68,24 @@ and operations may be composed from `DomainContract.Fragment` modules using `typ
 and `operations`. Entities support primitives, entity references, lists, dictionaries,
 enums, variants and opaque payloads. See the module documentation for their semantics.
 
+Operations can preserve scalar, list or nil results without adding response envelopes:
+
+```elixir
+operation :head, input: :empty_request, output_type: :string
+operation :paths, input: :empty_request, output_type: {:list, :string}
+operation :pricing, input: :empty_request, output_type: {:list, {:entity, :rate}}
+operation :clean, input: :empty_request, output_type: :null
+operation :echo, input_type: :string, output_type: :string
+```
+
+`input_type` and `output_type` use the field type algebra, including nested entity
+references. Choose exactly one named entity, local entity or explicit type for each
+side. `:null` accepts only nil; `optional_output: true` additionally allows nil for
+an otherwise typed result. Lists validate every element and entities reject unknown
+fields. Use the actual business shape; opaque payloads are for deliberately uninspected
+foreign values. Typed roots and `:null` require export format v5, including when
+referenced by another declaration. Existing declarations keep their original exports.
+
 ## Implement the complete interface
 
 The default implementation binds to its authoritative declaration:
@@ -106,7 +124,8 @@ end
 The compiler checks public `call/3` coverage of the whole interface. Literal operation
 heads and finite `operation in [...]` guards establish entry-point presence. A generic
 router can use the automatically derived `@contract_operations` guard instead of
-repeating a list. `contracts: [A.Contract, B.Contract]` binds a multi-interface provider.
+repeating a list; compiler-expanded Erlang equality/boolean guards are also recognized.
+`contracts: [A.Contract, B.Contract]` binds a multi-interface provider.
 The callback body and behavioral correctness remain the implementation author's responsibility.
 
 `Implementation.check(provider, exported_declarations)` verifies loaded entry-point
@@ -160,8 +179,9 @@ before restoring a previous provider; replacing code does not roll back persiste
 ## Export and check exact candidates
 
 `Info.contract/1` returns deterministic declarations; `Info.json/1` exports them.
-Authoritative declarations retain format v1/v2. References use format v4 and embed an
+Existing authoritative declarations retain format v1/v2. References use format v4 and embed an
 interface snapshot, its reachable entities, the domain description and a SHA-256 digest.
+Declarations containing or referencing typed roots or the nil-only type use format v5.
 Descriptions at every level participate in this identity. Legacy v3 consumer projections are rejected. A digest identifies an
 artifact; it does not authenticate its origin. The package catalog supplies trusted,
 immutable authoritative definitions, independently of the candidate implementation.

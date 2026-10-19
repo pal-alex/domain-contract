@@ -192,6 +192,59 @@ defmodule DomainContract.CompatibilityTest do
     end
   end
 
+  test "generated routers retain coverage after Kernel.in expands to Erlang guards" do
+    operation = Macro.var(:operation, nil)
+    values = Implementation.operations([Info.canonical(Public)])
+
+    expanded = Macro.expand(quote(do: unquote(operation) in unquote(values)), __ENV__)
+
+    # Compile the real expanded AST, rather than stringify it back into `in`.
+    module = Module.concat(__MODULE__, "Expanded#{System.unique_integer([:positive])}")
+
+    [{^module, beam}] =
+      Code.compile_quoted(
+        quote do
+          defmodule unquote(module) do
+            use DomainContract.Implementation, contract: unquote(Public)
+
+            def call(unquote(operation), _input, _context) when unquote(expanded),
+              do: {:error, :business_failure}
+          end
+        end
+      )
+
+    assert module.__domain_contract_operations__() == values
+    assert :ok = Implementation.check(module, [Public])
+    assert :ok = Implementation.check_beam(beam, [Public])
+    assert {:error, :business_failure} = module.call("get", %{}, nil)
+    assert_raise FunctionClauseError, fn -> module.call("absent", %{}, nil) end
+  end
+
+  test "expanded negative and contradictory guards cannot supply operation coverage" do
+    operation = Macro.var(:operation, nil)
+
+    for guard <- [
+          quote(do: unquote(operation) not in ["get", "count"]),
+          quote(do: unquote(operation) === "get" and unquote(operation) === "count")
+        ] do
+      expanded = Macro.expand(guard, %{__ENV__ | context: :guard})
+      module = Module.concat(__MODULE__, "Rejected#{System.unique_integer([:positive])}")
+
+      assert_raise CompileError, ~r/incomplete DomainContract implementation/, fn ->
+        Code.compile_quoted(
+          quote do
+            defmodule unquote(module) do
+              use DomainContract.Implementation, contract: unquote(Public)
+
+              def call(unquote(operation), _, _) when unquote(expanded),
+                do: {:error, :unreachable}
+            end
+          end
+        )
+      end
+    end
+  end
+
   test "wrong invocation signature and private entry points cannot implement a contract" do
     for implementation <- ["def call(_, _), do: :ok", "defp call(_, _, _), do: :ok"] do
       assert_raise CompileError, ~r/incomplete DomainContract implementation/, fn ->

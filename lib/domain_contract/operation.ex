@@ -4,6 +4,8 @@ defmodule DomainContract.Operation do
     :name,
     :input,
     :output,
+    :input_type,
+    :output_type,
     :description,
     inputs: [],
     outputs: [],

@@ -79,14 +79,31 @@ defmodule DomainContract.Implementation do
     end
   end
 
-  defp operation_guard(env, operation, {boolean, _, [left, right]}) when boolean in [:and, :or] do
+  # Kernel.in expands into Erlang equality/boolean calls in generated definitions
+  # and in some compiler versions before on_definition runs.
+  defp operation_guard(env, operation, {{:., _, [:erlang, function]}, _, arguments})
+       when function in [:orelse, :andalso, :"=:=", :==] do
+    operation_guard(env, operation, {function, [], arguments})
+  end
+
+  defp operation_guard(_, operation, {equality, _, [left, right]})
+       when equality in [:===, :==, :"=:="] do
+    cond do
+      same_variable?(left, operation) and is_binary(right) -> MapSet.new([right])
+      same_variable?(right, operation) and is_binary(left) -> MapSet.new([left])
+      true -> nil
+    end
+  end
+
+  defp operation_guard(env, operation, {boolean, _, [left, right]})
+       when boolean in [:and, :or, :andalso, :orelse] do
     left = operation_guard(env, operation, left)
     right = operation_guard(env, operation, right)
 
     case {left, right} do
       {nil, right} -> right
       {left, nil} -> left
-      {left, right} when boolean == :and -> MapSet.intersection(left, right)
+      {left, right} when boolean in [:and, :andalso] -> MapSet.intersection(left, right)
       {left, right} -> MapSet.union(left, right)
     end
   end

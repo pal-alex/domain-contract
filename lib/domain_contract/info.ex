@@ -20,16 +20,20 @@ defmodule DomainContract.Info do
       entities: entities
     }
 
-    if domain.consumes == [] and domain.implements == [] do
-      result
-    else
-      Map.merge(result, %{
-        format_version: 4,
-        consumes: domain.consumes |> Enum.map(&reference/1) |> Enum.sort_by(&{&1.kind, &1.name}),
-        implements:
-          domain.implements |> Enum.map(&reference/1) |> Enum.sort_by(&{&1.kind, &1.name})
-      })
-    end
+    result =
+      if domain.consumes == [] and domain.implements == [] do
+        result
+      else
+        Map.merge(result, %{
+          format_version: 4,
+          consumes:
+            domain.consumes |> Enum.map(&reference/1) |> Enum.sort_by(&{&1.kind, &1.name}),
+          implements:
+            domain.implements |> Enum.map(&reference/1) |> Enum.sort_by(&{&1.kind, &1.name})
+        })
+      end
+
+    if requires_v5?(canonical(result)), do: Map.put(result, :format_version, 5), else: result
   end
 
   @doc "Canonical JSON, including sorted object keys, suitable for saved evidence and later diffs."
@@ -52,10 +56,53 @@ defmodule DomainContract.Info do
     |> Map.put(
       :operations,
       interface.operations
-      |> Enum.map(&Map.take(&1, [:name, :input, :output, :description, :optional_output]))
+      |> Enum.map(&operation/1)
       |> Enum.sort_by(& &1.name)
     )
   end
+
+  defp operation(operation) do
+    result = Map.take(operation, [:name, :input, :output, :description, :optional_output])
+
+    Enum.reduce([:input_type, :output_type], result, fn property, result ->
+      if is_nil(Map.fetch!(operation, property)),
+        do: result,
+        else: Map.put(result, property, canonical_type(Map.fetch!(operation, property)))
+    end)
+  end
+
+  @doc false
+  def requires_v5?(contract) do
+    definitions =
+      [contract] ++
+        Enum.map(
+          (contract["consumes"] || []) ++ (contract["implements"] || []),
+          & &1["definition"]
+        )
+
+    Enum.any?(definitions, fn definition ->
+      interfaces = definition["interfaces"] || [definition["interface"]]
+
+      Enum.any?(interfaces, fn interface ->
+        Enum.any?(interface["operations"], fn operation ->
+          Map.has_key?(operation, "input_type") or Map.has_key?(operation, "output_type")
+        end)
+      end) or
+        Enum.any?(definition["entities"], fn entity ->
+          Enum.any?(entity["fields"], &null_type?(&1["type"]))
+        end)
+    end)
+  end
+
+  defp null_type?("null"), do: true
+
+  defp null_type?(["variant", choices]),
+    do: Enum.any?(choices, fn {_, type} -> null_type?(type) end)
+
+  defp null_type?([container, type]) when container in ["list", "dictionary"],
+    do: null_type?(type)
+
+  defp null_type?(_), do: false
 
   defp entity(entity) do
     entity

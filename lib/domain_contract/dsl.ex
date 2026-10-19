@@ -30,6 +30,8 @@ defmodule DomainContract.Dsl do
       name: [type: :atom, required: true],
       input: [type: :atom],
       output: [type: :atom],
+      input_type: [type: :any],
+      output_type: [type: :any],
       optional_output: [type: :boolean, default: false],
       description: [type: :string]
     ],

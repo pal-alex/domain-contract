@@ -102,19 +102,23 @@ defmodule DomainContract.Verifiers.Compose do
       key = if property == :input, do: :inputs, else: :outputs
       local = Map.fetch!(operation, key)
       reference = Map.fetch!(operation, property)
+      type = Map.fetch!(operation, if(property == :input, do: :input_type, else: :output_type))
 
-      case {reference, local} do
-        {nil, [entity]} ->
+      case {reference, local, type} do
+        {nil, [], type} when not is_nil(type) ->
+          {operation, entities}
+
+        {nil, [entity], nil} ->
           {operation |> Map.put(property, entity.name) |> Map.put(key, []), entities ++ [entity]}
 
-        {name, []} when is_atom(name) and not is_nil(name) ->
+        {name, [], nil} when is_atom(name) and not is_nil(name) ->
           {operation, entities}
 
         _ ->
           fail(
             dsl,
             List.last(local) || operation,
-            "operation #{inspect(operation.name)} requires exactly one #{property} reference or local entity"
+            "operation #{inspect(operation.name)} requires exactly one #{property} reference, local entity or #{property}_type"
           )
       end
     end)

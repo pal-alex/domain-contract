@@ -47,7 +47,12 @@ defmodule DomainContract.Reference do
 
   @doc false
   def snapshot(interface, entities, description \\ nil) do
-    roots = Enum.flat_map(interface["operations"], &[&1["input"], &1["output"]])
+    roots =
+      for operation <- interface["operations"],
+          direction <- ["input", "output"],
+          name <- root_entities(operation, direction),
+          do: name
+
     selected = reachable(roots, Map.new(entities, &{&1["name"], &1}), MapSet.new())
 
     definition = %{
@@ -60,6 +65,13 @@ defmodule DomainContract.Reference do
     }
 
     Map.put(definition, "digest", digest(definition))
+  end
+
+  defp root_entities(operation, direction) do
+    case Map.fetch(operation, direction <> "_type") do
+      {:ok, type} -> references(type)
+      :error -> [operation[direction]]
+    end
   end
 
   @doc "Checks snapshot integrity. The digest identifies the complete interface, including descriptions."

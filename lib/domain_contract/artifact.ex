@@ -1,7 +1,7 @@
 defmodule DomainContract.Artifact do
   @moduledoc "Validation of canonical contract artifacts before compilation, packaging or activation."
   alias DomainContract.{Info, Reference}
-  @primitives ~w(string integer float boolean datetime map opaque json_scalar)
+  @primitives ~w(string integer float boolean datetime map opaque json_scalar null)
 
   @doc "Rejects malformed schemas, unresolved types, legacy projections and inconsistent references."
   def validate(source) do
@@ -12,13 +12,14 @@ defmodule DomainContract.Artifact do
   end
 
   defp valid_contract?(contract) do
-    contract["format_version"] in [1, 2, 4] and
+    contract["format_version"] in [1, 2, 4, 5] and
       nonempty?(contract["domain"]) and description?(contract) and
       schema?(contract["interfaces"], contract["entities"]) and
       references?(Map.get(contract, "consumes", []), true) and
       references?(Map.get(contract, "implements", []), false) and
-      (contract["format_version"] == 4 or
+      (contract["format_version"] in [4, 5] or
          (not Map.has_key?(contract, "consumes") and not Map.has_key?(contract, "implements"))) and
+      (contract["format_version"] == 5 or not Info.requires_v5?(contract)) and
       unique?(
         (contract["interfaces"] || []) ++ (contract["implements"] || []),
         &{&1["kind"], &1["name"]}
@@ -50,9 +51,16 @@ defmodule DomainContract.Artifact do
       unique?(interface["operations"], & &1["name"]) and
       Enum.all?(interface["operations"], fn operation ->
         nonempty?(operation["name"]) and description?(operation) and
-          operation["input"] in names and operation["output"] in names and
+          root?(operation, "input", names) and root?(operation, "output", names) and
           is_boolean(operation["optional_output"])
       end)
+  end
+
+  defp root?(operation, direction, names) do
+    case Map.fetch(operation, direction <> "_type") do
+      {:ok, type} -> is_nil(operation[direction]) and type?(type, names)
+      :error -> operation[direction] in names
+    end
   end
 
   defp identity?(value) do

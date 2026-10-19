@@ -38,7 +38,12 @@ defmodule DomainContract do
       end
 
   `output_entity :name do ... end` declares a local output in the same way. Choose
-  exactly one reference or local entity for each side. Local names remain domain-wide
+  exactly one reference, local entity or explicit `input_type`/`output_type` for each
+  side. For example, `output_type {:list, :string}` preserves a list result and
+  `output_type :null` accepts only nil. Explicit types use the field type algebra,
+  including nested entity references; they do not wrap or transform business values.
+  Typed roots and `:null` use export format v5, including their consumers and replacements.
+  Local names remain domain-wide
   semantic type names, so collisions fail compilation instead of being renamed.
 
   Split declarations with `use DomainContract.Fragment` and a

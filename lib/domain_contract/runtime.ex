@@ -111,7 +111,12 @@ defmodule DomainContract.Runtime do
         :ok
 
       true ->
-        check(["entity", Map.fetch!(declaration, to_string(direction))], value, entities, [
+        type =
+          Map.get_lazy(declaration, "#{direction}_type", fn ->
+            ["entity", Map.fetch!(declaration, to_string(direction))]
+          end)
+
+        check(type, value, entities, [
           operation,
           direction
         ])
@@ -119,6 +124,7 @@ defmodule DomainContract.Runtime do
   end
 
   defp check("opaque", _value, _entities, _path), do: :ok
+  defp check("null", nil, _entities, _path), do: :ok
   defp check("string", value, _, _) when is_binary(value), do: :ok
   defp check("integer", value, _, _) when is_integer(value), do: :ok
   defp check("float", value, _, _) when is_number(value), do: :ok

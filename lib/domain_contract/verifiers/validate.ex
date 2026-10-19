@@ -5,7 +5,7 @@ defmodule DomainContract.Verifiers.Validate do
   use Spark.Dsl.Verifier
   import Spark.Dsl.Verifier, only: [get_entities: 2, get_persisted: 2]
 
-  @primitives [:string, :integer, :float, :boolean, :datetime, :map, :opaque, :json_scalar]
+  @primitives [:string, :integer, :float, :boolean, :datetime, :map, :opaque, :json_scalar, :null]
 
   @impl true
   def verify(dsl) do
@@ -81,17 +81,32 @@ defmodule DomainContract.Verifiers.Validate do
     declaration ++
       duplicates(dsl, interface.operations, path ++ [:operation], & &1.name) ++
       Enum.flat_map(interface.operations, fn operation ->
-        for property <- [:input, :output],
-            reference = Map.fetch!(operation, property),
-            not MapSet.member?(names, reference) do
-          error(
-            dsl,
-            operation,
-            path ++ [:operation, operation.name, property],
-            "operation references unknown entity #{inspect(reference)}",
-            property
-          )
-        end
+        Enum.flat_map([input: :input_type, output: :output_type], fn {property, type_property} ->
+          reference = Map.fetch!(operation, property)
+          type = Map.fetch!(operation, type_property)
+
+          valid? =
+            if is_nil(type),
+              do: MapSet.member?(names, reference),
+              else: valid_type?(type, names)
+
+          if valid? do
+            []
+          else
+            [
+              error(
+                dsl,
+                operation,
+                path ++ [:operation, operation.name, property],
+                if(is_nil(type),
+                  do: "operation references unknown entity #{inspect(reference)}",
+                  else: "invalid root type #{inspect(type)}"
+                ),
+                if(is_nil(type), do: property, else: type_property)
+              )
+            ]
+          end
+        end)
       end)
   end
 
