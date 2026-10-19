@@ -16,7 +16,7 @@ defmodule DomainContract.Source do
       File.mkdir!(destination)
 
       try do
-        if File.dir?(Path.join(source, ".git")) do
+        if File.exists?(Path.join(source, ".git")) do
           archive = Path.join(destination, "source.tar")
           command!("git", ["-C", source, "archive", "--output=" <> archive, revision])
           command!("tar", ["-xf", archive, "-C", destination])

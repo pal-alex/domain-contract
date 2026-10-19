@@ -216,3 +216,5 @@ For private Git dependencies, run `mix domain.vendor` in an authenticated build 
 before creating a Docker context. It materializes the exact locked revision in
 `vendor/domain_contract`, excluding credentials and Git metadata. Applications may use
 that directory in source bundles and their pinned Git dependency in ordinary checkouts.
+Git worktrees are supported; source bundles always contain the locked commit rather
+than uncommitted files from the checkout.

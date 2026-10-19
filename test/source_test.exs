@@ -36,6 +36,40 @@ defmodule DomainContract.SourceTest do
     end
   end
 
+  @tag :tmp_dir
+  test "source bundles accept Git worktrees and retain the exact committed revision", %{
+    tmp_dir: root
+  } do
+    source = Path.join(root, "repository")
+    File.mkdir_p!(source)
+    git(source, ["init", "-q"])
+    File.write!(Path.join(source, "library.ex"), "committed")
+    git(source, ["add", "."])
+
+    git(source, [
+      "-c",
+      "user.name=Test",
+      "-c",
+      "user.email=test@example.test",
+      "commit",
+      "-qm",
+      "initial"
+    ])
+
+    revision = git(source, ["rev-parse", "HEAD"]) |> String.trim()
+
+    worktree = Path.join(root, "task-worktree")
+    git(source, ["worktree", "add", "--detach", "-q", worktree, revision])
+    assert File.regular?(Path.join(worktree, ".git"))
+    File.write!(Path.join(worktree, "library.ex"), "uncommitted")
+    output = Path.join(root, "bundle")
+
+    assert ^output = DomainContract.Source.vendor!(worktree, revision, output)
+    assert File.read!(Path.join(output, "library.ex")) == "committed"
+    assert File.read!(Path.join(output, ".contract-revision")) == revision <> "\n"
+    refute File.exists?(Path.join(output, ".git"))
+  end
+
   defp git(root, args) do
     {output, 0} = System.cmd("git", args, cd: root, stderr_to_stdout: true)
     output
