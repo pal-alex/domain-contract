@@ -157,21 +157,34 @@ defmodule DomainContract.CheckTaskTest do
     defmodule BoundaryProbe do
       use Boundary, deps: [DomainContract, Spark], exports: [Contract]
       def call(context), do: DomainContract.call(context, "tasks", "get", %{})
+      def offline_check(beam), do: DomainContract.Implementation.check_beam(beam, [])
+    end
+    defmodule BoundaryProbe.Types do
+      use DomainContract.Fragment
+      declarations do
+        entity :item do
+          field :id, :string
+        end
+      end
     end
     defmodule BoundaryProbe.Contract do
       use DomainContract
       domain :boundary_probe do
+        types BoundaryProbe.Types
         interface :capability do
           name "probe"
           version 1
           operation :read do
             input_entity :input do
             end
-            output_entity :output do
-            end
+            output_type {:list, {:entity, :item}}
           end
         end
       end
+    end
+    defmodule BoundaryProbe.Provider do
+      use DomainContract.Implementation, contract: BoundaryProbe.Contract
+      def call(operation, _, _) when operation in @contract_operations, do: {:ok, []}
     end
     """)
 
