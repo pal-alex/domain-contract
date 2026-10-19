@@ -587,7 +587,7 @@ defmodule DomainContractTest do
         "{:enum, [\"a\", \"a\"]}",
         "{:enum, [\" \" ]}",
         "{:enum, [:a]}",
-        "{:enum, [1]}",
+        "{:enum, [[1]]}",
         "{:variant, %{}}",
         "{:variant, %{a: :string}}",
         "{:variant, %{\"\" => :string}}",

@@ -34,6 +34,14 @@ defmodule DomainContract do
   These types compose inside lists, dictionaries and variants. Exports using them
   have format version 2; declarations using only the original types retain v1.
 
+  `{:union, [type, other_type]}` accepts any declared alternative without tagging,
+  wrapping or converting the value. For example,
+  `{:union, [{:enum, [0]}, {:entity, :cursor}]}` preserves a zero sentinel or a
+  closed cursor map. Enums can also select exact numbers, booleans or null;
+  membership distinguishes integers from floats. Unions and non-string enums
+  require format v6, including snapshots in consumers and implementations.
+  Existing string enums and tagged variants retain their representation.
+
       operation :get do
         description "Read an item by its identity; absent items return no value."
         input_entity :item_lookup do

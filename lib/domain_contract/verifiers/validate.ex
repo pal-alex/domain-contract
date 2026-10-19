@@ -129,14 +129,23 @@ defmodule DomainContract.Verifiers.Validate do
   defp valid_type?({:dictionary, type}, names), do: valid_type?(type, names)
 
   defp valid_type?({:enum, values}, _names) when is_list(values) and values != [] do
-    Enum.all?(values, &nonempty_string?/1) and length(Enum.uniq(values)) == length(values)
+    Enum.all?(values, &enum_value?/1) and length(Enum.uniq(values)) == length(values)
   end
+
+  defp valid_type?({:union, types}, names) when is_list(types) and length(types) >= 2,
+    do: Enum.all?(types, &valid_type?(&1, names))
 
   defp valid_type?({:variant, choices}, names) when is_map(choices) and map_size(choices) > 0 do
     Enum.all?(choices, fn {tag, type} -> nonempty_string?(tag) and valid_type?(type, names) end)
   end
 
   defp valid_type?(_, _), do: false
+
+  defp enum_value?(value)
+       when is_number(value) or is_boolean(value) or is_nil(value),
+       do: true
+
+  defp enum_value?(value), do: nonempty_string?(value)
 
   defp nonempty_string?(value), do: is_binary(value) and String.trim(value) != ""
 

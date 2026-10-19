@@ -79,7 +79,21 @@ operation :echo, input_type: :string, output_type: :string
 ```
 
 `input_type` and `output_type` use the field type algebra, including nested entity
-references. Choose exactly one named entity, local entity or explicit type for each
+references. Untagged alternatives preserve existing values without an envelope:
+
+```elixir
+field :cursor, {:union, [{:enum, [0]}, {:entity, :cursor}]}, optional: true
+```
+
+This accepts exactly an integer zero or a validated cursor entity (and the usual
+optional absence/null). Other integers, floats and malformed cursor maps fail.
+Unions accept any declared alternative without conversion; they compose at roots
+and inside lists, dictionaries and tagged variants. Enums also support exact
+number, boolean and null values, distinguishing integers from floats. Unions and
+non-string enums require canonical format 6, including consumers and replacements.
+Older declarations keep their formats and fingerprints.
+
+Choose exactly one named entity, local entity or explicit type for each
 side. `:null` accepts only nil; `optional_output: true` additionally allows nil for
 an otherwise typed result. Lists validate every element and entities reject unknown
 fields. Use the actual business shape; opaque payloads are for deliberately uninspected

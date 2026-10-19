@@ -54,14 +54,15 @@ defmodule DomainContract.Artifact do
   end
 
   defp valid_contract?(contract) do
-    contract["format_version"] in [1, 2, 4, 5] and
+    contract["format_version"] in [1, 2, 4, 5, 6] and
       nonempty?(contract["domain"]) and description?(contract) and
       schema?(contract["interfaces"], contract["entities"]) and
       references?(Map.get(contract, "consumes", []), true) and
       references?(Map.get(contract, "implements", []), false) and
-      (contract["format_version"] in [4, 5] or
+      (contract["format_version"] in [4, 5, 6] or
          (not Map.has_key?(contract, "consumes") and not Map.has_key?(contract, "implements"))) and
-      (contract["format_version"] == 5 or not Info.requires_v5?(contract)) and
+      (contract["format_version"] in [5, 6] or not Info.requires_v5?(contract)) and
+      (contract["format_version"] == 6 or not Info.requires_v6?(contract)) and
       unique?(
         (contract["interfaces"] || []) ++ (contract["implements"] || []),
         &{&1["kind"], &1["name"]}
@@ -134,7 +135,10 @@ defmodule DomainContract.Artifact do
   defp type?([kind, type], names) when kind in ~w(list dictionary), do: type?(type, names)
 
   defp type?(["enum", values], _) when is_list(values),
-    do: values != [] and Enum.all?(values, &nonempty?/1) and Enum.uniq(values) == values
+    do: values != [] and Enum.all?(values, &enum_value?/1) and Enum.uniq(values) == values
+
+  defp type?(["union", types], names) when is_list(types),
+    do: length(types) >= 2 and Enum.all?(types, &type?(&1, names))
 
   defp type?(["variant", choices], names) when is_map(choices),
     do:
@@ -142,6 +146,12 @@ defmodule DomainContract.Artifact do
         Enum.all?(choices, fn {tag, type} -> nonempty?(tag) and type?(type, names) end)
 
   defp type?(_, _), do: false
+
+  defp enum_value?(value)
+       when is_number(value) or is_boolean(value) or is_nil(value),
+       do: true
+
+  defp enum_value?(value), do: nonempty?(value)
   defp description?(value), do: is_nil(value["description"]) or is_binary(value["description"])
   defp nonempty?(value), do: is_binary(value) and String.trim(value) != ""
   defp unique?(values, key), do: length(values) == length(Enum.uniq_by(values, key))

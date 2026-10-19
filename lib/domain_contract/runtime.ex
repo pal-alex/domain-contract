@@ -138,6 +138,12 @@ defmodule DomainContract.Runtime do
     if value in values, do: :ok, else: invalid(path)
   end
 
+  defp check(["union", types], value, entities, path) do
+    if Enum.any?(types, &(check(&1, value, entities, path) == :ok)),
+      do: :ok,
+      else: invalid(path)
+  end
+
   defp check(["variant", choices], value, entities, path) when is_map(value) do
     cond do
       Enum.any?(Map.keys(value), &(&1 not in ["type", "data"])) ->

@@ -109,5 +109,7 @@ defmodule DomainContract.Reference do
   defp references(["variant", choices]),
     do: Enum.flat_map(choices, fn {_, type} -> references(type) end)
 
+  defp references(["union", types]), do: Enum.flat_map(types, &references/1)
+
   defp references(_), do: []
 end

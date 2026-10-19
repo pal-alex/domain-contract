@@ -37,7 +37,11 @@ defmodule DomainContract.Info do
         })
       end
 
-    if requires_v5?(canonical(result)), do: Map.put(result, :format_version, 5), else: result
+    cond do
+      requires_v6?(canonical(result)) -> Map.put(result, :format_version, 6)
+      requires_v5?(canonical(result)) -> Map.put(result, :format_version, 5)
+      true -> result
+    end
   end
 
   @doc "Canonical JSON, including sorted object keys, suitable for saved evidence and later diffs."
@@ -77,14 +81,7 @@ defmodule DomainContract.Info do
 
   @doc false
   def requires_v5?(contract) do
-    definitions =
-      [contract] ++
-        Enum.map(
-          (contract["consumes"] || []) ++ (contract["implements"] || []),
-          & &1["definition"]
-        )
-
-    Enum.any?(definitions, fn definition ->
+    Enum.any?(definitions(contract), fn definition ->
       interfaces = definition["interfaces"] || [definition["interface"]]
 
       Enum.any?(interfaces, fn interface ->
@@ -97,6 +94,41 @@ defmodule DomainContract.Info do
         end)
     end)
   end
+
+  @doc false
+  def requires_v6?(contract) do
+    Enum.any?(definitions(contract), fn definition ->
+      interfaces = definition["interfaces"] || [definition["interface"]]
+
+      Enum.any?(interfaces, fn interface ->
+        Enum.any?(interface["operations"], fn operation ->
+          v6_type?(operation["input_type"]) or v6_type?(operation["output_type"])
+        end)
+      end) or
+        Enum.any?(definition["entities"], fn entity ->
+          Enum.any?(entity["fields"], &v6_type?(&1["type"]))
+        end)
+    end)
+  end
+
+  defp definitions(contract),
+    do:
+      [contract] ++
+        Enum.map(
+          (contract["consumes"] || []) ++ (contract["implements"] || []),
+          & &1["definition"]
+        )
+
+  defp v6_type?(["union", _]), do: true
+  defp v6_type?(["enum", values]), do: Enum.any?(values, &(not is_binary(&1)))
+
+  defp v6_type?(["variant", choices]),
+    do: Enum.any?(choices, fn {_, type} -> v6_type?(type) end)
+
+  defp v6_type?([container, type]) when container in ["list", "dictionary"],
+    do: v6_type?(type)
+
+  defp v6_type?(_), do: false
 
   defp v5_type?("null"), do: true
   defp v5_type?(["open_entity", _]), do: true
@@ -126,7 +158,11 @@ defmodule DomainContract.Info do
     |> Map.update!(:type, &canonical_type/1)
   end
 
-  defp canonical_type({:enum, values}), do: {:enum, Enum.sort(values)}
+  defp canonical_type({:enum, values}),
+    do: {:enum, Enum.sort_by(values, &{&1, is_float(&1)})}
+
+  defp canonical_type({:union, types}),
+    do: {:union, types |> Enum.map(&canonical_type/1) |> Enum.sort_by(&encode/1)}
 
   defp canonical_type({:variant, choices}),
     do: {:variant, Map.new(choices, fn {tag, type} -> {tag, canonical_type(type)} end)}
