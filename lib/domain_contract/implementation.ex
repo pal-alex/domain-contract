@@ -60,59 +60,94 @@ defmodule DomainContract.Implementation do
 
   @doc false
   def on_definition(env, :def, :call, [operation, _, _], guards, _body) do
-    names = if is_binary(operation), do: [operation], else: guarded_names(env, operation, guards)
+    names = guarded_names(env, operation, guards)
     Enum.each(names, &Module.put_attribute(env.module, :domain_contract_call_operations, &1))
   end
 
   def on_definition(_, _, _, _, _, _), do: :ok
 
   defp guarded_names(env, operation, guards) do
-    guards
+    if(guards == [], do: [true], else: guards)
     |> Enum.flat_map(fn guard ->
-      case operation_guard(env, operation, guard) do
-        nil -> []
-        names -> MapSet.to_list(names)
+      {_, excluded, constrained?} = operation_guard(env, operation, guard)
+
+      cond do
+        is_binary(operation) -> if MapSet.member?(excluded, operation), do: [], else: [operation]
+        constrained? -> MapSet.to_list(MapSet.difference(operation_universe(env), excluded))
+        true -> []
       end
     end)
   end
 
+  # Track definitely accepted and definitely rejected operation names separately.
+  # Input/context predicates remain unknown. Negation swaps the two sets, so a
+  # partially understood predicate cannot invent coverage for an excluded name.
   defp operation_guard(env, operation, {:in, _, [variable, values]}) do
     if same_variable?(variable, operation) do
       {values, _} = Code.eval_quoted(values, [], env)
-      if is_list(values), do: MapSet.new(Enum.filter(values, &is_binary/1))
+
+      if is_list(values),
+        do: constraint(env, Enum.filter(values, &is_binary/1)),
+        else: unknown_constraint()
+    else
+      unknown_constraint()
     end
   end
 
   # Kernel.in expands into Erlang equality/boolean calls in generated definitions
   # and in some compiler versions before on_definition runs.
   defp operation_guard(env, operation, {{:., _, [:erlang, function]}, _, arguments})
-       when function in [:orelse, :andalso, :"=:=", :==] do
+       when function in [:orelse, :andalso, :not, :"=:=", :==, :"=/=", :"/="] do
     operation_guard(env, operation, {function, [], arguments})
   end
 
-  defp operation_guard(_, operation, {equality, _, [left, right]})
+  defp operation_guard(env, operation, {equality, _, [left, right]})
        when equality in [:===, :==, :"=:="] do
     cond do
-      same_variable?(left, operation) and is_binary(right) -> MapSet.new([right])
-      same_variable?(right, operation) and is_binary(left) -> MapSet.new([left])
-      true -> nil
+      same_variable?(left, operation) and is_binary(right) -> constraint(env, [right])
+      same_variable?(right, operation) and is_binary(left) -> constraint(env, [left])
+      true -> unknown_constraint()
     end
   end
+
+  defp operation_guard(env, operation, {inequality, _, arguments})
+       when inequality in [:!=, :!==, :"=/=", :"/="] do
+    equality = if inequality in [:!=, :"/="], do: :==, else: :===
+    operation_guard(env, operation, {:not, [], [{equality, [], arguments}]})
+  end
+
+  defp operation_guard(env, operation, {:not, _, [guard]}) do
+    {accepted, excluded, constrained?} = operation_guard(env, operation, guard)
+    {excluded, accepted, constrained?}
+  end
+
+  defp operation_guard(env, _, true), do: {operation_universe(env), MapSet.new(), false}
+  defp operation_guard(env, _, false), do: {MapSet.new(), operation_universe(env), true}
 
   defp operation_guard(env, operation, {boolean, _, [left, right]})
        when boolean in [:and, :or, :andalso, :orelse] do
-    left = operation_guard(env, operation, left)
-    right = operation_guard(env, operation, right)
+    {left_yes, left_no, left_constrained?} = operation_guard(env, operation, left)
+    {right_yes, right_no, right_constrained?} = operation_guard(env, operation, right)
+    constrained? = left_constrained? or right_constrained?
 
-    case {left, right} do
-      {nil, right} -> right
-      {left, nil} -> left
-      {left, right} when boolean in [:and, :andalso] -> MapSet.intersection(left, right)
-      {left, right} -> MapSet.union(left, right)
+    if boolean in [:and, :andalso] do
+      {MapSet.intersection(left_yes, right_yes), MapSet.union(left_no, right_no), constrained?}
+    else
+      {MapSet.union(left_yes, right_yes), MapSet.intersection(left_no, right_no), constrained?}
     end
   end
 
-  defp operation_guard(_, _, _), do: nil
+  defp operation_guard(_, _, _), do: unknown_constraint()
+
+  defp unknown_constraint, do: {MapSet.new(), MapSet.new(), false}
+
+  defp constraint(env, names) do
+    accepted = MapSet.new(names)
+    {accepted, MapSet.difference(operation_universe(env), accepted), true}
+  end
+
+  defp operation_universe(env),
+    do: MapSet.new(Module.get_attribute(env.module, :contract_operations))
 
   defp same_variable?({name, _, context}, {name, _, context}), do: true
   defp same_variable?(_, _), do: false

@@ -282,7 +282,11 @@ defmodule DomainContract.CompatibilityTest do
   test "negative and disjoint operation guards do not advertise missing operations" do
     for guard <- [
           "operation not in @contract_operations",
-          "operation in [\"get\"] and operation in [\"count\"]"
+          "operation in [\"get\"] and operation in [\"count\"]",
+          "operation in @contract_operations and operation not in @contract_operations",
+          "operation in @contract_operations and not (operation in @contract_operations)",
+          "operation in @contract_operations and operation != \"get\"",
+          "operation in @contract_operations and false"
         ] do
       assert_raise CompileError, ~r/incomplete DomainContract implementation/, fn ->
         compile("""
@@ -291,6 +295,41 @@ defmodule DomainContract.CompatibilityTest do
         """)
       end
     end
+  end
+
+  test "literal operation heads with a false guard do not establish coverage" do
+    assert_raise CompileError, ~r/incomplete DomainContract implementation/, fn ->
+      compile("""
+      use DomainContract.Implementation, contract: #{inspect(Public)}
+      def call("get", _, _) when false, do: {:error, :unreachable}
+      def call("count", _, _), do: {:ok, %{}}
+      """)
+    end
+  end
+
+  test "negated constraints retain exclusions alongside unknown input predicates" do
+    assert_raise CompileError, ~r/missing public call\/3 operations: \["get"\]/, fn ->
+      compile("""
+      use DomainContract.Implementation, contract: #{inspect(Public)}
+      def call(operation, input, _) when operation in @contract_operations and not (operation == "get" or is_map(input)), do: {:ok, %{}}
+      """)
+    end
+  end
+
+  test "operation exclusions can be completed by another reachable clause" do
+    module = Module.concat(__MODULE__, "Exclusions#{System.unique_integer([:positive])}")
+
+    [{^module, beam}] =
+      Code.compile_string("""
+      defmodule #{inspect(module)} do
+        use DomainContract.Implementation, contract: #{inspect(Public)}
+        def call(operation, input, _) when operation in @contract_operations and operation != "get" and is_map(input), do: {:ok, %{}}
+        def call("get", _, _), do: {:ok, %{}}
+      end
+      """)
+
+    assert module.__domain_contract_operations__() == ["count", "get"]
+    assert :ok = Implementation.check_beam(beam, [Public])
   end
 
   test "exact versions, required availability, and optional availability are explicit" do

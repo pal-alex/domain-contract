@@ -192,11 +192,20 @@ immutable authoritative definitions, independently of the candidate implementati
 ```sh
 mix domain.contract Tasks.Contract --output tasks.json
 mix domain.export --output priv/domain_contracts.json
+mix domain.check --declarations priv/domain_contracts.json other-owner.json
 mix domain.check --authority tasks.json candidate.json consumer.json
 ```
 
 `domain.export` exports only the current application's root declarations, without
-starting it. `Compatibility.check(candidates, authorities)` rejects unknown contracts,
+starting it. This source-owner bundle can include both an authoritative contract and
+declarations implementing it, as well as interfaces for multiple runtime targets.
+`domain.check --declarations` validates these artifacts and rejects conflicting
+definitions using `Compatibility.validate/1`. It does not select providers, require
+their availability or authenticate their origin. Do not pass the entire owner bundle
+as an active deployment candidate. `--declarations` cannot be combined with `--authority`.
+
+For activation, supply the selected entry-point declarations and independent immutable
+authorities to the ordinary check. `Compatibility.check(candidates, authorities)` rejects unknown contracts,
 missing required providers, duplicate providers, conflicting definitions and incorrect
 versions. Optional providers may be absent. Candidate definitions are checked against
 the supplied authorities; references cannot invent contracts. Include exact packaged

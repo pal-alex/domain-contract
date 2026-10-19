@@ -103,6 +103,72 @@ defmodule DomainContract.CheckTaskTest do
       )
 
     assert status == 0, output
+
+    # An owner exports both its original definition and its default implementation.
+    # These are valid source declarations, but must not become two active providers.
+    implementation =
+      consumer
+      |> Map.put("domain", "default_provider")
+      |> Map.put("consumes", [])
+      |> Map.put("implements", [hd(consumer["consumes"])])
+
+    other_target =
+      put_in(authority, ["interfaces", Access.at(0), "kind"], "settings")
+
+    File.write!(
+      Path.join(root, "owner.json"),
+      Jason.encode!([authority, implementation, other_target])
+    )
+
+    {output, status} = System.cmd("mix", ["domain.check", "owner.json"], options)
+    assert status != 0, output
+    assert output =~ "multiple_providers"
+
+    {output, status} =
+      System.cmd("mix", ["domain.check", "--declarations", "owner.json"], options)
+
+    assert status == 0, output
+    assert output =~ "Domain declarations are valid (3 declarations)"
+
+    # Independently built consumers need no installed provider in declaration mode.
+    File.write!(Path.join(root, "consumer.json"), Jason.encode!([consumer]))
+
+    {output, status} =
+      System.cmd("mix", ["domain.check", "--declarations", "consumer.json"], options)
+
+    assert status == 0, output
+
+    {output, status} =
+      System.cmd(
+        "mix",
+        ["domain.check", "--declarations", "--authority", "authority.json", "owner.json"],
+        options
+      )
+
+    assert status != 0, output
+    assert output =~ "--declarations cannot be combined with --authority"
+
+    conflicting = Map.put(authority, "description", "Different normative obligations")
+    File.write!(Path.join(root, "conflict.json"), Jason.encode!([conflicting]))
+
+    {output, status} =
+      System.cmd(
+        "mix",
+        ["domain.check", "--declarations", "owner.json", "conflict.json"],
+        options
+      )
+
+    assert status != 0, output
+    assert output =~ "conflicting_contract"
+
+    corrupted = put_in(consumer, ["consumes", Access.at(0), "definition", "digest"], "forged")
+    File.write!(Path.join(root, "corrupted.json"), Jason.encode!([corrupted]))
+
+    {output, status} =
+      System.cmd("mix", ["domain.check", "--declarations", "corrupted.json"], options)
+
+    assert status != 0, output
+    assert output =~ "invalid_artifact"
   end
 
   @tag :tmp_dir
