@@ -8,119 +8,114 @@ defmodule DomainContract.Runtime do
   """
   alias DomainContract.Info
 
+  def invoke(owner, target, operation, input, context) when is_atom(target) do
+    with {:ok, consumer, binding} <- consumer(owner, context),
+         {:ok, reference} <- dependency(consumer, target),
+         :ok <- reference_input(reference, operation, input) do
+      result =
+        if binding do
+          binding.dispatch.(target, to_string(operation), input, context)
+        else
+          provider = DomainContract.Reference.resolve(target)
+
+          with :ok <- DomainContract.Compatibility.satisfies(provider, reference["definition"]),
+               do: target.call(to_string(operation), input, context)
+        end
+
+      case result do
+        {:ok, output} ->
+          with :ok <- reference_output(reference, operation, output), do: {:ok, output}
+
+        {:error, _} = error ->
+          error
+
+        _ ->
+          {:error, {:invalid_contract, :invalid_result}}
+      end
+    end
+  end
+
+  def invoke(_, _, _, _, _), do: {:error, {:invalid_contract, :invocation}}
+
+  defp consumer(owner, nil), do: {:ok, DomainContract.Reference.resolve(owner), nil}
+
+  defp consumer(owner, context) do
+    with {:ok, binding} <- DomainContract.Context.fetch(context),
+         true <- not is_nil(binding.caller) and is_function(binding.dispatch, 4),
+         true <-
+           binding.consumer["module"] ==
+             if(is_atom(owner), do: Atom.to_string(owner), else: owner) do
+      {:ok, binding.consumer, binding}
+    else
+      _ -> {:error, {:invalid_contract, :caller_context}}
+    end
+  end
+
   def input(source, operation, value), do: validate(source, operation, :input, value)
   def output(source, operation, value), do: validate(source, operation, :output, value)
 
-  def input(source, name, operation, value),
-    do: validate_interface(source, name, operation, :input, value)
+  def dependency(consumer, module) do
+    name = if is_atom(module), do: Atom.to_string(module), else: module
 
-  def output(source, name, operation, value),
-    do: validate_interface(source, name, operation, :output, value)
-
-  def dependency(consumer, name) do
-    contract = Info.canonical(consumer)
-
-    case Enum.filter(contract["consumes"] || [], &(&1["name"] == name)) do
+    case Enum.filter(Info.canonical(consumer)["consumes"] || [], &(&1["module"] == name)) do
       [reference] -> {:ok, reference}
       [] -> {:error, {:invalid_contract, :undeclared_dependency}}
-      _ -> {:error, {:invalid_contract, :ambiguous_interface}}
+      _ -> {:error, {:invalid_contract, :ambiguous_contract}}
     end
   end
 
   def reference_input(reference, operation, value),
-    do: validate_reference(reference, operation, :input, value)
+    do: input(reference["definition"], operation, value)
 
   def reference_output(reference, operation, value),
-    do: validate_reference(reference, operation, :output, value)
+    do: output(reference["definition"], operation, value)
 
-  defp validate_reference(reference, operation, direction, value) do
-    definition = reference["definition"]
-
-    if is_map(definition) and is_map(definition["interface"]) and is_list(definition["entities"]) do
-      declaration = Enum.find(definition["interface"]["operations"], &(&1["name"] == operation))
-
-      case validate_value(definition, declaration, operation, direction, value) do
-        {:error, :invalid_operation} -> {:error, {:invalid_contract, :invalid_operation}}
-        result -> result
-      end
-    else
-      {:error, {:invalid_contract, :invalid_reference}}
-    end
-  end
-
-  defp validate_interface(source, name, operation, direction, value) do
-    contract = Info.canonical(source)
-
-    interfaces =
-      contract["interfaces"] ++
-        Enum.map(contract["implements"] || [], & &1["definition"]["interface"])
-
-    case Enum.filter(interfaces, &(&1["name"] == name)) do
-      [interface] ->
-        case Enum.find(contract["implements"] || [], &(&1["name"] == name)) do
-          nil ->
-            validate_value(
-              contract,
-              Enum.find(interface["operations"], &(&1["name"] == operation)),
-              operation,
-              direction,
-              value
-            )
-
-          reference ->
-            validate_reference(reference, operation, direction, value)
-        end
-
-      [] ->
-        {:error, {:invalid_contract, :invalid_interface}}
-
-      _ ->
-        {:error, {:invalid_contract, :ambiguous_interface}}
-    end
-  end
+  def validate_type(type, value, entities \\ [], path \\ []),
+    do:
+      check(
+        type |> Info.encode() |> Jason.decode!(),
+        value,
+        Map.new(entities, &{&1["name"], &1}),
+        path
+      )
 
   defp validate(source, operation, direction, value) do
     contract = Info.canonical(source)
+    operation = to_string(operation)
 
-    matches =
-      contract["interfaces"]
-      |> Enum.flat_map(& &1["operations"])
-      |> Enum.filter(&(&1["name"] == operation))
+    case Enum.find(contract["operations"], &(&1["name"] == operation)) do
+      nil ->
+        {:error, {:invalid_contract, :invalid_operation}}
 
-    declaration =
-      case matches do
-        [declaration] -> declaration
-        [] -> nil
-        _ -> :ambiguous
-      end
+      declaration ->
+        if direction == :output and declaration["optional_output"] and is_nil(value) do
+          :ok
+        else
+          type =
+            declaration[to_string(direction) <> "_type"] ||
+              ["entity", declaration[to_string(direction)]]
 
-    validate_value(contract, declaration, operation, direction, value)
+          check(type, value, Map.new(contract["entities"], &{&1["name"], &1}), [
+            operation,
+            direction
+          ])
+        end
+    end
   end
 
-  defp validate_value(contract, declaration, operation, direction, value) do
-    entities = Map.new(contract["entities"], &{&1["name"], &1})
+  defp check("any", _value, _entities, _path), do: :ok
+  defp check("atom", value, _, _) when is_atom(value), do: :ok
+  defp check("list", value, _, _) when is_list(value), do: :ok
+  defp check("global", value, _, _) when is_map(value), do: :ok
+  defp check(["nullable", _], nil, _, _), do: :ok
+  defp check(["nullable", type], value, entities, path), do: check(type, value, entities, path)
 
-    cond do
-      is_nil(declaration) ->
-        {:error, :invalid_operation}
+  defp check(fields, value, entities, path) when is_map(fields) and is_map(value) do
+    value = normalize_keys(value)
 
-      declaration == :ambiguous ->
-        {:error, :ambiguous_operation}
-
-      direction == :output and declaration["optional_output"] and is_nil(value) ->
-        :ok
-
-      true ->
-        type =
-          Map.get_lazy(declaration, "#{direction}_type", fn ->
-            ["entity", Map.fetch!(declaration, to_string(direction))]
-          end)
-
-        check(type, value, entities, [
-          operation,
-          direction
-        ])
-    end
+    if Enum.sort(Map.keys(fields)) == Enum.sort(Map.keys(value)),
+      do: each(fields, fn {key, type} -> check(type, value[key], entities, path ++ [key]) end),
+      else: invalid(path ++ [:unknown_or_missing_field])
   end
 
   defp check("opaque", _value, _entities, _path), do: :ok
@@ -135,7 +130,12 @@ defmodule DomainContract.Runtime do
        do: :ok
 
   defp check(["enum", values], value, _, path) do
-    if value in values, do: :ok, else: invalid(path)
+    encoded =
+      if is_atom(value) and value not in [true, false, nil],
+        do: ["atom", Atom.to_string(value)],
+        else: value
+
+    if Enum.any?(values, &(&1 === encoded)), do: :ok, else: invalid(path)
   end
 
   defp check(["union", types], value, entities, path) do
@@ -177,6 +177,7 @@ defmodule DomainContract.Runtime do
 
   defp check([kind, name], value, entities, path)
        when kind in ["entity", "open_entity"] and is_map(value) do
+    value = normalize_keys(value)
     fields = entities[name]["fields"]
     keys = Enum.map(fields, & &1["name"])
 
@@ -199,7 +200,7 @@ defmodule DomainContract.Runtime do
     key = field["name"]
 
     cond do
-      field["optional"] and is_nil(value[key]) -> :ok
+      field["optional"] and not Map.has_key?(value, key) -> :ok
       not Map.has_key?(value, key) -> invalid(path ++ [key])
       true -> check(field["type"], value[key], entities, path ++ [key])
     end
@@ -213,6 +214,10 @@ defmodule DomainContract.Runtime do
           error -> {:halt, error}
         end
       end)
+
+  defp normalize_keys(value),
+    do:
+      Map.new(value, fn {key, v} -> {if(is_atom(key), do: Atom.to_string(key), else: key), v} end)
 
   defp invalid(path), do: {:error, {:invalid_contract, path}}
 end

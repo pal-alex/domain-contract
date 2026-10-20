@@ -23,17 +23,20 @@ defmodule Mix.Tasks.Domain.Export do
       |> Application.spec(:modules)
       |> Enum.sort()
       |> Enum.flat_map(fn module ->
-        Code.ensure_loaded!(module)
+        case :code.which(module) do
+          path when is_list(path) ->
+            case DomainContract.Artifact.from_beam(File.read!(path)) do
+              {:ok, artifact} -> [artifact]
+              {:error, :not_contract} -> []
+              error -> Mix.raise("invalid compiled contract: #{inspect({module, error})}")
+            end
 
-        if function_exported?(module, :spark_dsl_config, 0) and
-             Spark.Dsl.Extension.get_entities(module.spark_dsl_config(), [:contract]) != [] do
-          [module |> DomainContract.Info.json() |> Jason.decode!()]
-        else
-          []
+          _ ->
+            []
         end
       end)
 
-    json = Jason.encode!(contracts, pretty: true) <> "\n"
+    json = DomainContract.Info.encode(contracts) <> "\n"
 
     case options[:output] do
       nil -> Mix.shell().info(json)

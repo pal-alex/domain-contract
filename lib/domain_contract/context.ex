@@ -20,6 +20,21 @@ defmodule DomainContract.Context do
           dispatch: (String.t(), String.t(), term(), term() -> {:ok, term()} | {:error, term()})
         }
 
+  @key {__MODULE__, :binding}
+  def current, do: Process.get(@key)
+
+  def bind(context, function) when is_function(function, 0) do
+    {:ok, _} = fetch(context)
+    previous = Process.get(@key)
+    Process.put(@key, context)
+
+    try do
+      function.()
+    after
+      if is_nil(previous), do: Process.delete(@key), else: Process.put(@key, previous)
+    end
+  end
+
   @doc false
   def fetch(%__MODULE__{} = context), do: {:ok, context}
   def fetch(%{domain_contract: %__MODULE__{} = context}), do: {:ok, context}

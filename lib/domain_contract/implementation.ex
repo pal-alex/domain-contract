@@ -2,7 +2,7 @@ defmodule DomainContract.Implementation do
   @moduledoc """
   Verifies a provider's common `call(operation, input, context)` entry point.
 
-  Use `contract: My.Contract` or `contracts: [My.Contract, Other.Contract]`.
+  Automatically installed by inline owner declarations.
   Every operation needs a public call/3 clause with a literal string head or a
   finite `operation in [...]` guard. Generic routers can use the automatically
   derived `@contract_operations` guard. No second operation declaration is needed.
@@ -11,70 +11,40 @@ defmodule DomainContract.Implementation do
   business behavior. Packaging must compare the emitted snapshots with the exact
   package declarations; runtimes validate input/output through DomainContract.
   """
-  alias DomainContract.{Compatibility, Info}
+  alias DomainContract.Compatibility
+  alias DomainContract.Info
 
   @callback call(String.t(), term(), term()) :: {:ok, term()} | {:error, term()}
 
-  defmacro __using__(options) do
-    quote do
-      # Evaluate options in module-body order, after preceding attributes have
-      # been assigned. Eager macro-time evaluation cannot read those attributes.
-      options = unquote(options)
-      sources = options[:contracts] || List.wrap(Keyword.fetch!(options, :contract))
-
-      for source <- sources, is_atom(source) do
-        Code.ensure_compiled!(source)
-        # Keep a literal compile-time call so Mix tracks declaration body changes
-        # even when the source module arrives through a computed attribute.
-        Code.eval_quoted({{:., [], [source, :entities]}, [], [[:contract]]}, [], __ENV__)
-      end
-
-      contracts = Enum.map(sources, &DomainContract.Info.canonical/1)
-
-      case DomainContract.Compatibility.validate(contracts) do
-        :ok ->
-          :ok
-
-        {:error, errors} ->
-          raise ArgumentError, "invalid implementation declarations: #{inspect(errors)}"
-      end
-
-      @behaviour DomainContract.Implementation
-      Module.register_attribute(__MODULE__, :domain_contract_call_operations, accumulate: true)
-      @domain_contract_snapshots contracts
-      @contract_operations DomainContract.Implementation.operations(contracts)
-      @on_definition {DomainContract.Implementation, :on_definition}
-      @before_compile DomainContract.Implementation
-    end
-  end
-
   @doc false
-  def operations(contracts) do
-    contracts
-    |> Enum.flat_map(&Compatibility.provided/1)
-    |> Enum.flat_map(& &1["definition"]["interface"]["operations"])
-    |> Enum.map(& &1["name"])
-    |> Enum.uniq()
-    |> Enum.sort()
-  end
+  def operations(contracts),
+    do:
+      Enum.flat_map(contracts, fn contract -> Enum.map(contract["operations"], & &1["name"]) end)
+      |> Enum.uniq()
+      |> Enum.sort()
 
   @doc false
   def on_definition(env, :def, :call, [operation, _, _], guards, _body) do
-    names = guarded_names(env, operation, guards)
-    Enum.each(names, &Module.put_attribute(env.module, :domain_contract_call_operations, &1))
+    Module.put_attribute(env.module, :domain_contract_definitions, {env, operation, guards})
   end
 
   def on_definition(_, _, _, _, _, _), do: :ok
 
-  defp guarded_names(env, operation, guards) do
+  def guarded_names(env, operation, guards) do
     if(guards == [], do: [true], else: guards)
     |> Enum.flat_map(fn guard ->
       {_, excluded, constrained?} = operation_guard(env, operation, guard)
 
       cond do
-        is_binary(operation) -> if MapSet.member?(excluded, operation), do: [], else: [operation]
-        constrained? -> MapSet.to_list(MapSet.difference(operation_universe(env), excluded))
-        true -> []
+        is_binary(operation) or is_atom(operation) ->
+          name = to_string(operation)
+          if MapSet.member?(excluded, name), do: [], else: [name]
+
+        constrained? ->
+          MapSet.to_list(MapSet.difference(operation_universe(env), excluded))
+
+        true ->
+          []
       end
     end)
   end
@@ -151,38 +121,6 @@ defmodule DomainContract.Implementation do
 
   defp same_variable?({name, _, context}, {name, _, context}), do: true
   defp same_variable?(_, _), do: false
-
-  defmacro __before_compile__(env) do
-    contracts = Module.get_attribute(env.module, :domain_contract_snapshots)
-
-    covered =
-      Module.get_attribute(env.module, :domain_contract_call_operations)
-      |> Enum.uniq()
-      |> Enum.sort()
-
-    missing = operations(contracts) -- covered
-
-    unless Module.defines?(env.module, {:call, 3}, :def) and missing == [] do
-      raise CompileError,
-        file: env.file,
-        line: env.line,
-        description:
-          "incomplete DomainContract implementation; missing public call/3 operations: #{inspect(missing)}"
-    end
-
-    quote do
-      Module.register_attribute(__MODULE__, :domain_contract_implementation, persist: true)
-
-      @domain_contract_implementation %{
-        contracts: unquote(Macro.escape(contracts)),
-        operations: unquote(covered)
-      }
-      @doc false
-      def __domain_contracts__, do: unquote(Macro.escape(contracts))
-      @doc false
-      def __domain_contract_operations__, do: unquote(covered)
-    end
-  end
 
   @doc "Checks a loaded package entry point against its exported contract declarations."
   def check(module, expected \\ nil) do

@@ -1,201 +1,85 @@
 defmodule DomainContract.Info do
-  @moduledoc """
-  Deterministic export of the normative domain contract, including API structure and
-  behavioral descriptions. Source locations stay in Spark, outside this representation.
-  Exporting a contract does not verify that an implementation satisfies its guarantees.
-  """
-  alias Spark.Dsl.Extension
+  @moduledoc "Canonical, source-independent public contract metadata."
+  def contract(module) when is_atom(module), do: DomainContract.Reference.resolve(module)
 
-  @doc "Returns structure and descriptions, with named lists sorted independently of declaration order."
-  def contract(module) when is_atom(module) do
-    [domain] = Extension.get_entities(module, [:contract])
-    contract(domain)
+  def contract(%DomainContract.Domain{} = owner) do
+    owner
+    |> Map.from_struct()
+    |> Map.drop([:__spark_metadata__])
+    |> Map.update!(:module, &Atom.to_string/1)
+    |> Map.update!(:operations, &named/1)
+    |> Map.update!(:entities, &named/1)
+    |> Map.update!(:consumes, fn refs ->
+      refs
+      |> Enum.map(fn ref ->
+        %{
+          module: Atom.to_string(ref.module),
+          optional: ref.optional,
+          definition: DomainContract.Reference.snapshot(ref.definition)
+        }
+      end)
+      |> Enum.sort_by(& &1.module)
+    end)
+    |> Map.update!(:subscriptions, fn refs ->
+      refs
+      |> Enum.map(fn ref ->
+        %{module: Atom.to_string(ref.module), name: ref.name, definition: ref.definition}
+      end)
+      |> Enum.sort_by(&{&1.module, &1.name})
+    end)
+    |> Map.update!(:commands, &named/1)
+    |> Map.update!(:notifications, &named/1)
+    |> Map.put(:format_version, 7)
+    |> canonical()
+    |> then(&Map.put(&1, "digest", DomainContract.Reference.digest(&1)))
   end
 
-  def contract(%DomainContract.Domain{} = domain) do
-    entities = domain.entities |> Enum.map(&entity/1) |> Enum.sort_by(& &1.name)
-
-    result = %{
-      format_version: format_version(entities),
-      domain: domain.name,
-      description: domain.description,
-      interfaces:
-        domain.interfaces |> Enum.map(&interface/1) |> Enum.sort_by(&{&1.kind, &1.name}),
-      entities: entities
-    }
-
-    result =
-      if domain.consumes == [] and domain.implements == [] do
-        result
-      else
-        Map.merge(result, %{
-          format_version: 4,
-          consumes:
-            domain.consumes |> Enum.map(&reference/1) |> Enum.sort_by(&{&1.kind, &1.name}),
-          implements:
-            domain.implements |> Enum.map(&reference/1) |> Enum.sort_by(&{&1.kind, &1.name})
-        })
-      end
-
-    cond do
-      requires_v6?(canonical(result)) -> Map.put(result, :format_version, 6)
-      requires_v5?(canonical(result)) -> Map.put(result, :format_version, 5)
-      true -> result
-    end
-  end
-
-  @doc "Canonical JSON, including sorted object keys, suitable for saved evidence and later diffs."
-  def json(module), do: module |> contract() |> encode()
-
-  @doc "Normalizes declarations or exports to string-keyed, transport-independent data."
-  def canonical(module) when is_atom(module), do: module |> contract() |> canonical()
-  def canonical(%{"interfaces" => _} = map), do: map
+  def canonical(module) when is_atom(module), do: contract(module)
   def canonical(map), do: map |> encode() |> Jason.decode!()
-
-  @doc false
+  def json(source), do: source |> canonical() |> encode()
   def encode(value), do: value |> ordered() |> Jason.encode!(pretty: true)
+  defp named(items), do: items |> Enum.map(&plain/1) |> Enum.sort_by(& &1.name)
 
-  defp reference(reference),
-    do: Map.take(reference, [:kind, :name, :version, :optional, :definition])
-
-  defp interface(interface) do
-    interface
-    |> Map.take([:kind, :name, :version, :description])
-    |> Map.put(
-      :operations,
-      interface.operations
-      |> Enum.map(&operation/1)
-      |> Enum.sort_by(& &1.name)
-    )
-  end
-
-  defp operation(operation) do
-    result = Map.take(operation, [:name, :input, :output, :description, :optional_output])
-
-    Enum.reduce([:input_type, :output_type], result, fn property, result ->
-      if is_nil(Map.fetch!(operation, property)),
-        do: result,
-        else: Map.put(result, property, canonical_type(Map.fetch!(operation, property)))
-    end)
-  end
-
-  @doc false
-  def requires_v5?(contract) do
-    Enum.any?(definitions(contract), fn definition ->
-      interfaces = definition["interfaces"] || [definition["interface"]]
-
-      Enum.any?(interfaces, fn interface ->
-        Enum.any?(interface["operations"], fn operation ->
-          Map.has_key?(operation, "input_type") or Map.has_key?(operation, "output_type")
-        end)
-      end) or
-        Enum.any?(definition["entities"], fn entity ->
-          Enum.any?(entity["fields"], &v5_type?(&1["type"]))
-        end)
-    end)
-  end
-
-  @doc false
-  def requires_v6?(contract) do
-    Enum.any?(definitions(contract), fn definition ->
-      interfaces = definition["interfaces"] || [definition["interface"]]
-
-      Enum.any?(interfaces, fn interface ->
-        Enum.any?(interface["operations"], fn operation ->
-          v6_type?(operation["input_type"]) or v6_type?(operation["output_type"])
-        end)
-      end) or
-        Enum.any?(definition["entities"], fn entity ->
-          Enum.any?(entity["fields"], &v6_type?(&1["type"]))
-        end)
-    end)
-  end
-
-  defp definitions(contract),
+  defp plain(%_{} = struct),
     do:
-      [contract] ++
-        Enum.map(
-          (contract["consumes"] || []) ++ (contract["implements"] || []),
-          & &1["definition"]
-        )
+      struct
+      |> Map.from_struct()
+      |> Map.drop([:__spark_metadata__, :module, :definition, :inputs, :outputs])
+      |> Map.new(fn {k, v} -> {k, plain(v)} end)
 
-  defp v6_type?(["union", _]), do: true
-  defp v6_type?(["enum", values]), do: Enum.any?(values, &(not is_binary(&1)))
+  defp plain(map) when is_map(map), do: Map.new(map, fn {k, v} -> {k, plain(v)} end)
+  defp plain(list) when is_list(list), do: Enum.map(list, &plain/1)
+  defp plain(value), do: value
+  defp ordered(%_{} = struct), do: struct |> Map.from_struct() |> ordered()
 
-  defp v6_type?(["variant", choices]),
-    do: Enum.any?(choices, fn {_, type} -> v6_type?(type) end)
-
-  defp v6_type?([container, type]) when container in ["list", "dictionary"],
-    do: v6_type?(type)
-
-  defp v6_type?(_), do: false
-
-  defp v5_type?("null"), do: true
-  defp v5_type?(["open_entity", _]), do: true
-
-  defp v5_type?(["variant", choices]),
-    do: Enum.any?(choices, fn {_, type} -> v5_type?(type) end)
-
-  defp v5_type?([container, type]) when container in ["list", "dictionary"],
-    do: v5_type?(type)
-
-  defp v5_type?(_), do: false
-
-  defp entity(entity) do
-    entity
-    |> Map.take([:name, :description])
-    |> Map.put(
-      :fields,
-      entity.fields
-      |> Enum.map(&field/1)
-      |> Enum.sort_by(& &1.name)
-    )
-  end
-
-  defp field(field) do
-    field
-    |> Map.take([:name, :type, :optional, :description])
-    |> Map.update!(:type, &canonical_type/1)
-  end
-
-  defp canonical_type({:enum, values}),
-    do: {:enum, Enum.sort_by(values, &{&1, is_float(&1)})}
-
-  defp canonical_type({:union, types}),
-    do: {:union, types |> Enum.map(&canonical_type/1) |> Enum.sort_by(&encode/1)}
-
-  defp canonical_type({:variant, choices}),
-    do: {:variant, Map.new(choices, fn {tag, type} -> {tag, canonical_type(type)} end)}
-
-  defp canonical_type({container, type}) when container in [:list, :dictionary],
-    do: {container, canonical_type(type)}
-
-  defp canonical_type(type), do: type
-
-  # Old declarations retain byte-for-byte v1 exports. Readers must explicitly
-  # support v2 before consuming enum, variant or JSON scalar declarations.
-  defp format_version(entities) do
-    if Enum.any?(entities, fn entity -> Enum.any?(entity.fields, &extended_type?(&1.type)) end),
-      do: 2,
-      else: 1
-  end
-
-  defp extended_type?(:json_scalar), do: true
-  defp extended_type?({kind, _}) when kind in [:enum, :variant], do: true
-
-  defp extended_type?({container, type}) when container in [:list, :dictionary],
-    do: extended_type?(type)
-
-  defp extended_type?(_type), do: false
-
-  defp ordered(map) when is_map(map) do
-    map
-    |> Enum.map(fn {key, value} -> {to_string(key), ordered(value)} end)
-    |> Enum.sort_by(&elem(&1, 0))
-    |> Jason.OrderedObject.new()
-  end
+  defp ordered(map) when is_map(map),
+    do:
+      map
+      |> Enum.map(fn {k, v} -> {to_string(k), ordered(v)} end)
+      |> Enum.sort_by(&elem(&1, 0))
+      |> Jason.OrderedObject.new()
 
   defp ordered(list) when is_list(list), do: Enum.map(list, &ordered/1)
+
+  defp ordered({:enum, values}) do
+    [
+      "enum",
+      values
+      |> Enum.map(fn
+        atom when is_atom(atom) and atom not in [true, false, nil] ->
+          ["atom", Atom.to_string(atom)]
+
+        value ->
+          value
+      end)
+      |> Enum.sort_by(&encode/1)
+    ]
+  end
+
   defp ordered(tuple) when is_tuple(tuple), do: tuple |> Tuple.to_list() |> ordered()
+
+  defp ordered(atom) when is_atom(atom) and atom not in [true, false, nil],
+    do: Atom.to_string(atom)
+
   defp ordered(value), do: value
 end

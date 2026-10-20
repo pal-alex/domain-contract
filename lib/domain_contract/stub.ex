@@ -1,22 +1,15 @@
 defmodule DomainContract.Stub do
-  @moduledoc "Builds a dispatcher that validates stub requests and successful replies against the provider."
-  alias DomainContract.Runtime
-
+  @moduledoc "Validated runtime dispatcher for domain tests."
   def dispatcher(provider, handlers) do
-    names = Enum.map(DomainContract.Compatibility.provided(provider), & &1["name"])
+    contract = DomainContract.Info.canonical(provider)
 
-    fn name, operation, input, _context ->
-      with true <- name in names,
-           :ok <- Runtime.input(provider, name, operation, input),
-           {:ok, handler} <- Map.fetch(handlers, {name, operation}),
+    fn module, operation, input, _context ->
+      with true <- Atom.to_string(module) == contract["module"],
+           :ok <- DomainContract.Runtime.input(contract, operation, input),
+           {:ok, handler} <- Map.fetch(handlers, operation),
            {:ok, output} <- handler.(input),
-           :ok <- Runtime.output(provider, name, operation, output) do
-        {:ok, output}
-      else
-        false -> {:error, :invalid_interface}
-        :error -> {:error, :not_stubbed}
-        {:error, _} = error -> error
-      end
+           :ok <- DomainContract.Runtime.output(contract, operation, output),
+           do: {:ok, output}
     end
   end
 end

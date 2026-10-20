@@ -1,115 +1,86 @@
 defmodule DomainContract.Reference do
-  @moduledoc "An exact reference to an authoritative interface, resolved when declarations compile."
-  defstruct [
-    :name,
-    :version,
-    :contract,
-    :kind,
-    :definition,
-    optional: false,
-    __spark_metadata__: nil
-  ]
-
+  @moduledoc "Deterministic public-module metadata resolution; never activates provider code."
+  alias DomainContract.Artifact
   alias DomainContract.Info
+  defstruct [:module, :definition, optional: false, __spark_metadata__: nil]
 
-  @doc "Resolves a module, canonical export, or JSON file into an immutable interface snapshot."
-  def resolve(source, name, version, kind \\ nil) do
-    matches =
-      for contract <- List.wrap(load(source)),
-          :ok = DomainContract.Artifact.validate(contract),
-          interface <- contract["interfaces"],
-          interface["name"] == name and interface["version"] == version and
-            (is_nil(kind) or interface["kind"] == to_string(kind)),
-          do: {contract, interface}
+  def resolve(module) when is_atom(module) and not is_nil(module) do
+    paths = Application.get_env(:domain_contract, :metadata_paths, [])
 
-    case matches do
-      [{contract, interface}] ->
-        snapshot(interface, contract["entities"], contract["description"])
+    artifacts =
+      Enum.flat_map(paths, fn path ->
+        path |> Path.expand() |> Path.wildcard() |> Enum.flat_map(&List.wrap(load(&1)))
+      end)
+
+    external = Enum.filter(artifacts, &(&1["module"] == Atom.to_string(module)))
+
+    compiled =
+      case :code.which(module) do
+        path when is_list(path) and path != [] ->
+          case Artifact.from_beam(File.read!(path)) do
+            {:ok, artifact} ->
+              [artifact]
+
+            {:error, :not_contract} ->
+              []
+
+            error ->
+              raise ArgumentError,
+                    "invalid contract metadata #{inspect(module)}: #{inspect(error)}"
+          end
+
+        _ ->
+          []
+      end
+
+    candidates = compiled ++ external
+
+    candidates =
+      if candidates == [] do
+        case Code.ensure_compiled(module) do
+          {:module, _} ->
+            if function_exported?(module, :__contract__, 0), do: [module.__contract__()], else: []
+
+          _ ->
+            []
+        end
+      else
+        candidates
+      end
+
+    case candidates do
+      [artifact] ->
+        if Artifact.validate(artifact) != :ok,
+          do: raise(ArgumentError, "invalid contract #{inspect(module)}")
+
+        artifact
 
       [] ->
-        raise ArgumentError, "unknown contract #{inspect({kind, name, version})}"
+        raise ArgumentError, "missing contract metadata for #{inspect(module)}"
 
       _ ->
-        raise ArgumentError, "ambiguous contract #{inspect({kind, name, version})}"
+        raise ArgumentError, "ambiguous contract metadata for #{inspect(module)}"
     end
   end
 
-  def load(source) when is_atom(source) do
-    Code.ensure_compiled!(source)
-    source |> Info.contract() |> Info.canonical()
-  end
-
+  def load(source) when is_atom(source), do: resolve(source)
   def load(source) when is_map(source), do: Info.canonical(source)
 
   def load(path) when is_binary(path) do
-    path |> File.read!() |> Jason.decode!()
-  end
+    bytes = File.read!(path)
 
-  @doc false
-  def snapshot(interface, entities, description \\ nil) do
-    roots =
-      for operation <- interface["operations"],
-          direction <- ["input", "output"],
-          name <- root_entities(operation, direction),
-          do: name
-
-    selected = reachable(roots, Map.new(entities, &{&1["name"], &1}), MapSet.new())
-
-    definition = %{
-      "description" => description,
-      "interface" => interface,
-      "entities" =>
-        entities
-        |> Enum.filter(&MapSet.member?(selected, &1["name"]))
-        |> Enum.sort_by(& &1["name"])
-    }
-
-    Map.put(definition, "digest", digest(definition))
-  end
-
-  defp root_entities(operation, direction) do
-    case Map.fetch(operation, direction <> "_type") do
-      {:ok, type} -> references(type)
-      :error -> [operation[direction]]
-    end
-  end
-
-  @doc "Checks snapshot integrity. The digest identifies the complete interface, including descriptions."
-  def valid?(%{"interface" => interface, "entities" => entities, "digest" => digest} = definition)
-      when is_map(interface) and is_list(entities) and is_binary(digest) do
-    digest == digest(Map.delete(definition, "digest")) and
-      definition == snapshot(interface, entities, definition["description"])
-  rescue
-    _ -> false
-  end
-
-  def valid?(_), do: false
-
-  defp digest(definition) do
-    :crypto.hash(:sha256, Info.encode(definition)) |> Base.encode16(case: :lower)
-  end
-
-  defp reachable([], _, seen), do: seen
-
-  defp reachable([name | rest], definitions, seen) do
-    if MapSet.member?(seen, name) do
-      reachable(rest, definitions, seen)
+    if Path.extname(path) == ".beam" do
+      {:ok, artifact} = Artifact.from_beam(bytes)
+      artifact
     else
-      entity = Map.fetch!(definitions, name)
-      children = Enum.flat_map(entity["fields"], &references(&1["type"]))
-      reachable(children ++ rest, definitions, MapSet.put(seen, name))
+      Jason.decode!(bytes)
     end
   end
 
-  defp references([kind, name]) when kind in ["entity", "open_entity"], do: [name]
+  def snapshot(artifact), do: Map.drop(artifact, ["consumes", "subscribe", "digest"])
 
-  defp references([container, type]) when container in ["list", "dictionary"],
-    do: references(type)
-
-  defp references(["variant", choices]),
-    do: Enum.flat_map(choices, fn {_, type} -> references(type) end)
-
-  defp references(["union", types]), do: Enum.flat_map(types, &references/1)
-
-  defp references(_), do: []
+  def digest(artifact),
+    do:
+      :crypto.hash(:sha256, Info.encode(Map.delete(artifact, "digest")))
+      |> Base.encode16(case: :lower)
 end

@@ -6,55 +6,19 @@ defmodule DomainContract.Verifiers.Compose do
   alias Spark.Dsl.Transformer
   alias Spark.Error.DslError
 
-  def transform(dsl) do
-    domains = Transformer.get_entities(dsl, [:contract])
-    declarations = Transformer.get_entities(dsl, [:declarations])
+  def compose(dsl, owner) do
+    entities = expand(dsl, owner.entities)
 
-    if declarations != [] do
-      fail(dsl, hd(declarations), "declarations belong in a DomainContract fragment")
-    end
+    {operations, local} =
+      owner.operations
+      |> then(&expand(dsl, &1))
+      |> Enum.map_reduce([], fn operation, entities ->
+        {operation, local} = local_contracts(dsl, operation)
+        {operation, entities ++ local}
+      end)
 
-    # Exactly-one-domain diagnostics belong to Validate, including their location.
-    case domains do
-      [domain] -> compose(dsl, domain)
-      _ -> {:ok, dsl}
-    end
-  rescue
-    error in DslError -> {:error, error}
-  end
-
-  defp compose(dsl, domain) do
-    entities = expand(dsl, domain.entities)
-
-    {interfaces, local_entities} = compose_interfaces(dsl, domain.interfaces)
-
-    references =
-      domain.entities ++
-        Enum.flat_map(domain.interfaces, & &1.operations)
-
-    dsl = Enum.reduce(references, dsl, &track_fragment/2)
-
-    domain = %{
-      domain
-      | interfaces: interfaces,
-        entities: entities ++ local_entities
-    }
-
-    {:ok, Transformer.replace_entity(dsl, [:contract], domain, fn _ -> true end)}
-  end
-
-  defp compose_interfaces(dsl, interfaces) do
-    Enum.map_reduce(interfaces, [], fn interface, entities ->
-      {operations, local} =
-        interface.operations
-        |> then(&expand(dsl, &1))
-        |> Enum.map_reduce([], fn operation, entities ->
-          {operation, local} = local_contracts(dsl, operation)
-          {operation, entities ++ local}
-        end)
-
-      {%{interface | operations: operations}, entities ++ local}
-    end)
+    dsl = Enum.reduce(owner.entities ++ owner.operations, dsl, &track_fragment/2)
+    {%{owner | operations: operations, entities: entities ++ local}, dsl}
   end
 
   defp track_fragment(%DomainContract.DeclarationReference{module: module}, dsl) do
@@ -78,7 +42,7 @@ defmodule DomainContract.Verifiers.Compose do
          true <- module.opts()[:of] == DomainContract do
       config = module.spark_dsl_config()
 
-      if Extension.get_entities(config, [:contract]) != [] do
+      if Extension.get_opt(config, [:contract], :version) do
         fail(dsl, reference, "a DomainContract fragment must contain declarations, not a domain")
       end
 
