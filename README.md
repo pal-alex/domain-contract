@@ -135,7 +135,8 @@ assign updates remain valid; reserved command/notification bypasses are diagnost
 `mix domain.export --output architecture.json` exports owner BEAM metadata without
 starting the application. `mix domain.diff before.json after.json --json review.json`
 produces readable and machine reports, separating compatible and incompatible
-changes. `mix domain.check --declarations architecture.json` validates artifacts;
+changes. Add `--sources 'lib/**/*.ex'` (repeatable) to include source boundary
+diagnostics; proven bypasses fail the command and review warnings remain advisory. `mix domain.check --declarations architecture.json` validates artifacts;
 `mix domain.check candidates.json` validates the selected providers/dependencies.
 
 ```text

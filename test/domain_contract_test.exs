@@ -390,6 +390,38 @@ defmodule DomainContractTest do
            ) == []
   end
 
+  @tag :tmp_dir
+  test "diff CLI writes source boundary violations even when public metadata is unchanged", %{
+    tmp_dir: directory
+  } do
+    architecture = Path.join(directory, "architecture.json")
+    source = Path.join(directory, "view.ex")
+    report = Path.join(directory, "review.json")
+    File.write!(architecture, Info.encode(Architecture.export([Editor])))
+    File.write!(source, "Phoenix.LiveView.send_update(Editor, id: 1, command: :close)")
+
+    assert_raise Mix.Error, ~r/unauthorized architectural interactions/, fn ->
+      ExUnit.CaptureIO.capture_io(fn ->
+        Mix.Tasks.Domain.Diff.run([
+          architecture,
+          architecture,
+          "--sources",
+          source,
+          "--json",
+          report
+        ])
+      end)
+    end
+
+    assert %{
+             "compatible" => [],
+             "incompatible" => [],
+             "diagnostics" => [
+               %{"reason" => "contract_bypassing_delivery", "severity" => "error"}
+             ]
+           } = Jason.decode!(File.read!(report))
+  end
+
   test "compile rejects missing contracts, invalid schemas and incomplete implementations" do
     assert_raise ArgumentError, ~r/missing contract/, fn ->
       DomainContract.Reference.resolve(MissingOwner)
