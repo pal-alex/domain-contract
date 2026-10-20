@@ -36,6 +36,7 @@ defmodule DomainContract do
   @impl true
   def handle_opts(_options) do
     quote do
+      @behaviour DomainContract.Implementation
       require DomainContract
       require DomainContract.UI
       Module.register_attribute(__MODULE__, :domain_contract_definitions, accumulate: true)

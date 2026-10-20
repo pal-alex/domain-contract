@@ -15,6 +15,7 @@ defmodule DomainContract.Implementation do
   alias DomainContract.Info
 
   @callback call(String.t(), term(), term()) :: {:ok, term()} | {:error, term()}
+  @optional_callbacks call: 3
 
   @doc false
   def operations(contracts),
@@ -25,6 +26,10 @@ defmodule DomainContract.Implementation do
 
   @doc false
   def on_definition(env, :def, :call, [operation, _, _], guards, _body) do
+    Module.put_attribute(env.module, :domain_contract_definitions, {env, operation, guards})
+  end
+
+  def on_definition(env, :def, :call, [operation, _, _, {:\\, _, [_, _]}], guards, _body) do
     Module.put_attribute(env.module, :domain_contract_definitions, {env, operation, guards})
   end
 
