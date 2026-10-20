@@ -178,14 +178,18 @@ defmodule DomainContract.Architecture do
               else: {node, findings}
 
           {{:., _, [{:__aliases__, _, parts}, function]}, meta, _} = node, findings ->
-            name = Enum.map_join(parts, ".", &to_string/1)
+            # __MODULE__.Helper and other computed aliases require lexical
+            # expansion. This source-only review must not guess their owner.
+            name =
+              if Enum.all?(parts, &is_atom/1),
+                do: Enum.map_join(parts, ".", &to_string/1)
 
             private_owner =
               owners
               |> Map.keys()
               |> Enum.sort_by(&String.length/1, :desc)
               |> Enum.find(
-                &(name != &1 and not Map.has_key?(owners, name) and
+                &(is_binary(name) and name != &1 and not Map.has_key?(owners, name) and
                     String.starts_with?(name, &1 <> "."))
               )
 

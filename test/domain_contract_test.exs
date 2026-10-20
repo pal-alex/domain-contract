@@ -388,6 +388,11 @@ defmodule DomainContractTest do
              [{"x.ex", "Phoenix.LiveView.send_update(Editor, id: 1, title: \"normal\")"}],
              [Editor]
            ) == []
+
+    assert Architecture.diagnose(
+             [{"x.ex", "__MODULE__.Private.save(%{})"}],
+             [Editor]
+           ) == []
   end
 
   @tag :tmp_dir
