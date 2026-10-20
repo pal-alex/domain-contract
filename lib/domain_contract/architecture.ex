@@ -184,7 +184,10 @@ defmodule DomainContract.Architecture do
               owners
               |> Map.keys()
               |> Enum.sort_by(&String.length/1, :desc)
-              |> Enum.find(&String.starts_with?(name, &1 <> "."))
+              |> Enum.find(
+                &(name != &1 and not Map.has_key?(owners, name) and
+                    String.starts_with?(name, &1 <> "."))
+              )
 
             if private_owner && function not in [:__info__, :module_info],
               do:

@@ -24,13 +24,13 @@ defmodule DomainContract.Compatibility do
 
       errors =
         for consumer <- candidates,
-            ref <- consumer["consumes"],
+            ref <- consumer["consumes"] || [],
             reason <- dependency(ref, providers),
             do: %{consumer: consumer["module"], module: ref["module"], reason: reason}
 
       subscriptions =
         for consumer <- candidates,
-            ref <- consumer["subscriptions"],
+            ref <- consumer["subscriptions"] || [],
             reason <- subscription(ref, providers),
             do: %{consumer: consumer["module"], module: ref["module"], reason: reason}
 

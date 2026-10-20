@@ -567,4 +567,18 @@ defmodule DomainContractTest do
     assert [%{severity: :warning, reason: :growing_composition}] =
              Architecture.diff([previous], [current]).diagnostics
   end
+
+  test "public snapshots link without private dependency and subscription sections" do
+    snapshot = DomainContract.Reference.snapshot(Info.canonical(Echo))
+    refute Map.has_key?(snapshot, "consumes")
+    refute Map.has_key?(snapshot, "subscriptions")
+    assert :ok = DomainContract.Artifact.validate(snapshot)
+    assert :ok = Compatibility.check([snapshot, Client])
+    child = snapshot |> Map.put("module", "Elixir.DomainContractTest.Echo.PublicChild")
+
+    assert Architecture.diagnose(
+             [{"client.ex", "DomainContractTest.Echo.PublicChild.call(\"echo\", %{}, nil)"}],
+             [Echo, child]
+           ) == []
+  end
 end
