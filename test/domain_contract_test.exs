@@ -128,6 +128,25 @@ defmodule DomainContractTest do
     assert Runtime.input(Echo, :absent, %{}) == {:error, {:invalid_contract, :invalid_operation}}
   end
 
+  test "runtime uses loaded immutable owners after build metadata changes" do
+    previous = Application.get_env(:domain_contract, :metadata_paths, [])
+
+    path =
+      Path.join(System.tmp_dir!(), "runtime-contract-#{System.unique_integer([:positive])}.json")
+
+    altered = Echo |> Info.canonical() |> Map.put("version", 73) |> Map.delete("digest")
+    File.write!(path, Info.json(altered))
+    Application.put_env(:domain_contract, :metadata_paths, [path])
+
+    try do
+      assert_raise ArgumentError, ~r/ambiguous/, fn -> DomainContract.Reference.resolve(Echo) end
+      assert Client.run(%{text: "captured"}) == {:ok, "captured"}
+    after
+      Application.put_env(:domain_contract, :metadata_paths, previous)
+      File.rm!(path)
+    end
+  end
+
   test "scoped runtime and explicit contexts preserve trusted state and restore binding" do
     dispatch = fn Echo, "echo", input, context ->
       assert context.source == %{user: 7, execution: "kept"}

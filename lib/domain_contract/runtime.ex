@@ -16,7 +16,7 @@ defmodule DomainContract.Runtime do
         if binding do
           binding.dispatch.(target, to_string(operation), input, context)
         else
-          provider = DomainContract.Reference.resolve(target)
+          provider = Info.canonical(target)
 
           with :ok <- DomainContract.Compatibility.satisfies(provider, reference["definition"]),
                do: target.call(to_string(operation), input, context)
@@ -37,7 +37,7 @@ defmodule DomainContract.Runtime do
 
   def invoke(_, _, _, _, _), do: {:error, {:invalid_contract, :invocation}}
 
-  defp consumer(owner, nil), do: {:ok, DomainContract.Reference.resolve(owner), nil}
+  defp consumer(owner, nil), do: {:ok, Info.canonical(owner), nil}
 
   defp consumer(owner, context) do
     with {:ok, binding} <- DomainContract.Context.fetch(context),
@@ -57,7 +57,7 @@ defmodule DomainContract.Runtime do
   def dependency(consumer, module) do
     name = if is_atom(module), do: Atom.to_string(module), else: module
 
-    case Enum.filter(Info.canonical(consumer)["consumes"] || [], &(&1["module"] == name)) do
+    case Enum.filter(canonical(consumer)["consumes"] || [], &(&1["module"] == name)) do
       [reference] -> {:ok, reference}
       [] -> {:error, {:invalid_contract, :undeclared_dependency}}
       _ -> {:error, {:invalid_contract, :ambiguous_contract}}
@@ -79,8 +79,15 @@ defmodule DomainContract.Runtime do
         path
       )
 
+  # Captured compiler metadata is already canonical. Invocation must not rescan
+  # build inputs or serialize the complete dependency graph for each value.
+  defp canonical(%{"format_version" => 7, "module" => module} = contract) when is_binary(module),
+    do: contract
+
+  defp canonical(source), do: Info.canonical(source)
+
   defp validate(source, operation, direction, value) do
-    contract = Info.canonical(source)
+    contract = canonical(source)
     operation = to_string(operation)
 
     case Enum.find(contract["operations"], &(&1["name"] == operation)) do

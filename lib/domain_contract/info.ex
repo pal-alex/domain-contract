@@ -1,6 +1,10 @@
 defmodule DomainContract.Info do
   @moduledoc "Canonical, source-independent public contract metadata."
-  def contract(module) when is_atom(module), do: DomainContract.Reference.resolve(module)
+  def contract(module) when is_atom(module) do
+    if function_exported?(module, :__contract__, 0),
+      do: module.__contract__(),
+      else: DomainContract.Reference.resolve(module)
+  end
 
   def contract(%DomainContract.Domain{} = owner) do
     owner

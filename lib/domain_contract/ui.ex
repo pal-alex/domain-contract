@@ -11,7 +11,6 @@ defmodule DomainContract.UI do
   end
 
   alias DomainContract.Info
-  alias DomainContract.Reference
   alias DomainContract.Runtime
   @participants {__MODULE__, :participants}
   @token {__MODULE__, :token}
@@ -131,7 +130,7 @@ defmodule DomainContract.UI do
 
   @doc "Registers one active addressed participant in the current LiveView process."
   def mount(socket, module, id, kind \\ :component) when kind in [:component, :view, :context] do
-    contract = Reference.resolve(module)
+    contract = Info.canonical(module)
     token()
 
     Process.put(
@@ -160,7 +159,7 @@ defmodule DomainContract.UI do
   end
 
   def dispatch_event(owner, socket, name, payload) do
-    contract = Reference.resolve(owner)
+    contract = Info.canonical(owner)
 
     with true <- Enum.any?(participants(), fn {{module, _}, _} -> module == owner end),
          {:ok, event} <- message(contract, "notifications", name),
@@ -220,7 +219,7 @@ defmodule DomainContract.UI do
 
   def receive_message(module, {secret, {:command, name, payload}}, socket) do
     if secret != token(), do: raise(ArgumentError, "untrusted UI contract envelope")
-    contract = Reference.resolve(module)
+    contract = Info.canonical(module)
     {:ok, command} = message(contract, "commands", name)
     :ok = Runtime.validate_type(command["payload"], payload, contract["entities"])
     module.handle_command(name, payload, socket)
@@ -228,7 +227,7 @@ defmodule DomainContract.UI do
 
   def receive_message(module, {secret, {:notification, emitter, name, payload}}, socket) do
     if secret != token(), do: raise(ArgumentError, "untrusted UI contract envelope")
-    contract = Reference.resolve(module)
+    contract = Info.canonical(module)
 
     subscription =
       Enum.find(
