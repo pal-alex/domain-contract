@@ -7,13 +7,19 @@ defmodule DomainContract do
   use Boundary,
     top_level?: true,
     type: :strict,
-    deps: [Spark, Jason, Mix, Phoenix.Component, Phoenix.LiveView],
+    deps:
+      [Spark, Jason, Mix] ++
+        if(Code.ensure_loaded?(Phoenix.LiveView),
+          do: [Phoenix.Component, Phoenix.LiveView],
+          else: []
+        ),
     exports: [
       Artifact,
       Architecture,
       Compatibility,
       Context,
-      Dsl,
+      {Dsl, []},
+      Compiler,
       Fragment,
       Implementation,
       Info,

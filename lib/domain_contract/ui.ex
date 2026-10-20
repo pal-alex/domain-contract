@@ -6,6 +6,10 @@ defmodule DomainContract.UI do
   Remove addressed participants with unmount/2 when the parent removes them.
   All registrations disappear with the LiveView process. Iframe protocols are separate.
   """
+  unless Code.ensure_loaded?(Phoenix.LiveView) do
+    @compile {:no_warn_undefined, Phoenix.LiveView}
+  end
+
   alias DomainContract.Info
   alias DomainContract.Reference
   alias DomainContract.Runtime
