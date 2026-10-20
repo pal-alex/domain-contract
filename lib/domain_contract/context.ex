@@ -17,7 +17,7 @@ defmodule DomainContract.Context do
   @type t :: %__MODULE__{
           consumer: module() | map(),
           caller: term(),
-          dispatch: (String.t(), String.t(), term(), term() -> {:ok, term()} | {:error, term()})
+          dispatch: (module(), String.t(), term(), term() -> {:ok, term()} | {:error, term()})
         }
 
   @key {__MODULE__, :binding}

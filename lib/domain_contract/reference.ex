@@ -48,6 +48,8 @@ defmodule DomainContract.Reference do
         candidates
       end
 
+    candidates = Enum.uniq_by(candidates, &snapshot/1)
+
     case candidates do
       [artifact] ->
         if Artifact.validate(artifact) != :ok,

@@ -391,7 +391,15 @@ defmodule DomainContractTest do
     assert :code.is_loaded(module) == false
     assert [%{"module" => identity}] = consumer.__contract__()["consumes"]
     assert identity == Atom.to_string(module)
-    Application.put_env(:domain_contract, :metadata_paths, [path, path])
+    conflicting = Path.rootname(path) <> "-conflicting.json"
+
+    File.write!(
+      conflicting,
+      Info.encode([artifact |> Map.delete("digest") |> Map.put("version", 2)])
+    )
+
+    on_exit(fn -> File.rm(conflicting) end)
+    Application.put_env(:domain_contract, :metadata_paths, [path, conflicting])
 
     assert_raise ArgumentError, ~r/ambiguous contract/, fn ->
       DomainContract.Reference.resolve(module)
