@@ -150,7 +150,9 @@ Incompatible changes
 ```
 
 Only public declarations enter diffs. Source diagnostics identify explicit reserved
-UI delivery and potential private owner calls; dynamic dispatch, aliases, business
-cohesion, prop forwarding and prose obligations still require human review and
+UI delivery and potential private owner calls. Forwarding all assigns in HEEx emits
+a prop propagation warning; growing a surface with at least 20 operations plus
+dependencies emits a composition warning. These are review heuristics, not errors.
+Dynamic dispatch, aliases, business cohesion and prose obligations require human review and
 behavioral tests. Boundary continues to enforce configured implementation boundaries.
 Run `mix verify` for formatting, compilation with warnings as errors and all tests.

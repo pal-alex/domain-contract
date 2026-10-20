@@ -128,6 +128,49 @@ defmodule DomainContractTest do
     assert Runtime.input(Echo, :absent, %{}) == {:error, {:invalid_contract, :invalid_operation}}
   end
 
+  test "self dependencies capture their inline owner without a separate artifact" do
+    module = Module.concat(__MODULE__, "SelfOwner#{System.unique_integer([:positive])}")
+
+    Code.compile_string(
+      "defmodule #{inspect(module)} do use DomainContract; contract do version 1; responsibility \"Owns a self-scoped request.\"; consumes __MODULE__; operation :echo, input_type: :string, output_type: :string end; def call(\"echo\", input, _), do: {:ok, input} end"
+    )
+
+    [reference] = module.__contract__()["consumes"]
+    assert reference["definition"] == DomainContract.Reference.snapshot(module.__contract__())
+    assert :ok = DomainContract.Artifact.validate(module)
+    :code.purge(module)
+    :code.delete(module)
+  end
+
+  test "context validation cache cannot reuse changed or invalid consumer metadata" do
+    dispatch = fn _, _, _, _ -> {:error, :unused} end
+    owner = Info.canonical(Client)
+    first = Context.new(owner, "first", dispatch)
+    second = Context.new(owner, "second", dispatch)
+    assert first.consumer == second.consumer
+    assert second.caller == "second"
+
+    assert_raise ArgumentError, fn ->
+      Context.new(Map.put(owner, "consumes", []), "forged", dispatch)
+    end
+
+    module = Module.concat(__MODULE__, "CachedOwner#{System.unique_integer([:positive])}")
+
+    for version <- [1, 73] do
+      :code.purge(module)
+      :code.delete(module)
+
+      Code.compile_string(
+        "defmodule #{inspect(module)} do use DomainContract; contract do version #{version}; responsibility \"Owns cached context validation.\" end end"
+      )
+
+      assert Context.new(module, "caller", dispatch).consumer["version"] == version
+    end
+
+    :code.purge(module)
+    :code.delete(module)
+  end
+
   test "runtime uses loaded immutable owners after build metadata changes" do
     previous = Application.get_env(:domain_contract, :metadata_paths, [])
 
@@ -506,5 +549,22 @@ defmodule DomainContractTest do
       end
     end
     """)
+  end
+
+  test "review signals distinguish assign forwarding and growth from compatibility failures" do
+    assert [%{severity: :warning, reason: :props_passthrough}] =
+             Architecture.diagnose([{"view.ex", "~H\"<.child {assigns} />\""}], [Editor])
+
+    previous =
+      DomainContract.Info.canonical(Echo)
+      |> Map.put(
+        "operations",
+        List.duplicate(hd(DomainContract.Info.canonical(Echo)["operations"]), 20)
+      )
+
+    current = Map.put(previous, "responsibility", "Owns an additional concern requiring review.")
+
+    assert [%{severity: :warning, reason: :growing_composition}] =
+             Architecture.diff([previous], [current]).diagnostics
   end
 end

@@ -25,7 +25,8 @@ defmodule DomainContract.Architecture do
     %{
       compatible: Enum.filter(changes, & &1.compatible),
       incompatible: Enum.reject(changes, & &1.compatible),
-      diagnostics: Enum.sort_by(diagnostics, &Info.encode/1)
+      diagnostics:
+        Enum.sort_by(diagnostics ++ composition_warnings(before, after_state), &Info.encode/1)
     }
   end
 
@@ -119,6 +120,24 @@ defmodule DomainContract.Architecture do
           }
   end
 
+  # Size and cohesion are review heuristics, never compatibility decisions.
+  defp composition_warnings(before, after_state) do
+    for {module, previous} <- before,
+        current = after_state[module],
+        not is_nil(current),
+        length(previous["operations"]) + length(previous["consumes"]) >= 20,
+        previous["responsibility"] != current["responsibility"] or
+          length(current["consumes"]) > length(previous["consumes"]) or
+          length(current["operations"]) > length(previous["operations"]),
+        do: %{
+          module: module,
+          severity: :warning,
+          reason: :growing_composition,
+          detail:
+            "An already large public surface gained behavior or changed responsibility; review cohesion."
+        }
+  end
+
   def render(report) do
     (["Architecture changes", "", "Compatible changes"] ++
        Enum.map(report.compatible, &line("+", &1)) ++
@@ -187,7 +206,20 @@ defmodule DomainContract.Architecture do
             {node, findings}
         end)
 
-      findings
+      forwarding =
+        Regex.scan(~r/<(?:[A-Z][\w.]*\.|\.)[a-z][\w!?]*[^>]*\{assigns\}/, source, return: :index)
+        |> Enum.map(fn [{offset, _} | _] ->
+          %{
+            file: path,
+            line: 1 + length(String.split(binary_part(source, 0, offset), "\n")) - 1,
+            severity: :warning,
+            reason: :props_passthrough,
+            detail:
+              "All assigns are forwarded to a component; review whether unrelated props cross ownership boundaries."
+          }
+        end)
+
+      findings ++ forwarding
     end)
     |> Enum.uniq()
     |> Enum.sort_by(&Info.encode/1)

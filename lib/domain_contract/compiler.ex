@@ -62,6 +62,17 @@ defmodule DomainContract.Compiler do
     artifact =
       env.module |> DomainContract.UI.compile_props(artifact) |> DomainContract.Info.canonical()
 
+    public = DomainContract.Reference.snapshot(artifact)
+
+    artifact =
+      Map.update!(artifact, "consumes", fn references ->
+        Enum.map(references, fn reference ->
+          if reference["module"] == artifact["module"],
+            do: Map.put(reference, "definition", public),
+            else: reference
+        end)
+      end)
+
     DomainContract.Owned.validate(env, artifact)
     operations = Enum.map(artifact["operations"], & &1["name"])
 

@@ -42,11 +42,27 @@ defmodule DomainContract.Context do
 
   @doc "Captures a validated consumer snapshot once when the trusted adapter creates a context."
   def new(consumer, caller, dispatch) when not is_nil(caller) and is_function(dispatch, 4) do
-    consumer = DomainContract.Info.canonical(consumer)
+    source = if is_atom(consumer), do: DomainContract.Info.canonical(consumer), else: consumer
+    cache = {__MODULE__, :validated_consumer}
 
-    case DomainContract.Artifact.validate(consumer) do
-      :ok -> %__MODULE__{consumer: consumer, caller: caller, dispatch: dispatch}
-      {:error, reason} -> raise ArgumentError, "invalid consumer contract: #{inspect(reason)}"
-    end
+    consumer =
+      case Process.get(cache) do
+        {^source, canonical} ->
+          canonical
+
+        _ ->
+          canonical = DomainContract.Info.canonical(source)
+
+          case DomainContract.Artifact.validate(canonical) do
+            :ok ->
+              Process.put(cache, {source, canonical})
+              canonical
+
+            {:error, reason} ->
+              raise ArgumentError, "invalid consumer contract: #{inspect(reason)}"
+          end
+      end
+
+    %__MODULE__{consumer: consumer, caller: caller, dispatch: dispatch}
   end
 end

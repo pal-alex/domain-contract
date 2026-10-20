@@ -40,15 +40,21 @@ defmodule DomainContract.Verifiers.Compile do
 
     {owner, dsl} = DomainContract.Verifiers.Compose.compose(dsl, owner)
 
+    public = DomainContract.Info.contract(%{owner | consumes: [], subscriptions: []})
+
+    resolve = fn module ->
+      if module == owner.module, do: public, else: Reference.resolve(module)
+    end
+
     owner = %{
       owner
       | consumes:
           Enum.map(owner.consumes, fn ref ->
-            %{ref | definition: Reference.resolve(ref.module)}
+            %{ref | definition: resolve.(ref.module)}
           end),
         subscriptions:
           Enum.map(owner.subscriptions, fn ref ->
-            provider = Reference.resolve(ref.module)
+            provider = resolve.(ref.module)
 
             event =
               Enum.find(provider["notifications"], &(&1["name"] == to_string(ref.name))) ||
