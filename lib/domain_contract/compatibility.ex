@@ -40,12 +40,7 @@ defmodule DomainContract.Compatibility do
 
   def provided(source) do
     owner = Info.canonical(source)
-
-    if owner["operations"] == [],
-      do: [],
-      else: [
-        %{"module" => owner["module"], "definition" => DomainContract.Reference.snapshot(owner)}
-      ]
+    [%{"module" => owner["module"], "definition" => DomainContract.Reference.snapshot(owner)}]
   end
 
   def satisfies(provider, requirements) do

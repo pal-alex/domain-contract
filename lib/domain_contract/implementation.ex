@@ -130,7 +130,6 @@ defmodule DomainContract.Implementation do
   @doc "Checks a loaded package entry point against its exported contract declarations."
   def check(module, expected \\ nil) do
     with {:module, _} <- Code.ensure_loaded(module),
-         true <- function_exported?(module, :call, 3),
          true <- function_exported?(module, :__domain_contracts__, 0),
          true <- function_exported?(module, :__domain_contract_operations__, 0) do
       actual = module.__domain_contracts__()
@@ -138,7 +137,9 @@ defmodule DomainContract.Implementation do
       expected =
         if is_nil(expected), do: actual, else: Enum.map(List.wrap(expected), &Info.canonical/1)
 
-      check_metadata(actual, module.__domain_contract_operations__(), expected)
+      if operations(actual) == [] or function_exported?(module, :call, 3),
+        do: check_metadata(actual, module.__domain_contract_operations__(), expected),
+        else: {:error, {:invalid_contract, :invalid_implementation}}
     else
       _ -> {:error, {:invalid_contract, :invalid_implementation}}
     end
@@ -150,13 +151,16 @@ defmodule DomainContract.Implementation do
          exports = Keyword.fetch!(chunks, :exports),
          true <-
            Enum.all?(
-             [{:call, 3}, {:__domain_contracts__, 0}, {:__domain_contract_operations__, 0}],
+             [{:__domain_contracts__, 0}, {:__domain_contract_operations__, 0}],
              &(&1 in exports)
            ),
          [%{contracts: actual, operations: covered}] <-
            Keyword.get(Keyword.fetch!(chunks, :attributes), :domain_contract_implementation) do
       expected = Enum.map(List.wrap(expected), &Info.canonical/1)
-      check_metadata(actual, covered, expected)
+
+      if operations(actual) == [] or {:call, 3} in exports,
+        do: check_metadata(actual, covered, expected),
+        else: {:error, {:invalid_contract, :invalid_implementation}}
     else
       _ -> {:error, {:invalid_contract, :invalid_implementation}}
     end
