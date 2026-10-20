@@ -19,7 +19,7 @@ defmodule DomainContract do
       Compatibility,
       Context,
       {Dsl, []},
-      Compiler,
+      {Compiler, []},
       Fragment,
       Implementation,
       Info,
@@ -38,6 +38,17 @@ defmodule DomainContract do
     ]
 
   use Spark.Dsl, default_extensions: [extensions: [DomainContract.Dsl]]
+
+  defmacro __using__(options) do
+    code = super(options)
+
+    quote do
+      DomainContract.Compiler.capture_boundary(__MODULE__)
+      unquote(code)
+      @domain_contract_spark_options @opts
+      DomainContract.Compiler.isolate_callbacks(__MODULE__)
+    end
+  end
 
   @impl true
   def handle_opts(_options) do

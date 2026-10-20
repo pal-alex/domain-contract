@@ -1,5 +1,39 @@
 defmodule DomainContract.Compiler do
   @moduledoc false
+  def capture_boundary(module) do
+    callbacks = Module.get_attribute(module, :before_compile) || []
+
+    if {Boundary.Definition, :__before_compile__} in callbacks do
+      Module.put_attribute(
+        module,
+        :domain_contract_boundary_options,
+        Module.get_attribute(module, :opts)
+      )
+    end
+  end
+
+  def isolate_callbacks(module) do
+    callbacks = Module.get_attribute(module, :before_compile) || []
+    Module.delete_attribute(module, :before_compile)
+
+    callbacks
+    |> Enum.reverse()
+    |> Enum.each(fn
+      {Spark.Dsl, function} ->
+        Module.put_attribute(module, :before_compile, {DomainContract.Compiler.Spark, function})
+
+      {Boundary.Definition, function} ->
+        Module.put_attribute(
+          module,
+          :before_compile,
+          {DomainContract.Compiler.Boundary, function}
+        )
+
+      callback ->
+        Module.put_attribute(module, :before_compile, callback)
+    end)
+  end
+
   def prepare_operations(module) do
     state = Process.get({module, :spark, [:contract]})
 

@@ -427,6 +427,33 @@ defmodule DomainContractTest do
     end
   end
 
+  test "Boundary and Spark preserve their own options in both declaration orders" do
+    for directives <- [
+          "use Boundary, deps: [DomainContract], exports: [Child]\nuse DomainContract",
+          "use DomainContract\nuse Boundary, deps: [DomainContract], exports: [Child]"
+        ] do
+      module = Module.concat(["FrameworkOwner#{System.unique_integer([:positive])}"])
+
+      [{^module, beam}] =
+        Code.compile_string("""
+        defmodule #{inspect(module)} do
+          #{directives}
+          contract do
+            version 1
+            responsibility "Owns a Boundary checked domain."
+          end
+        end
+        """)
+
+      {:ok, {^module, [attributes: attributes]}} = :beam_lib.chunks(beam, [:attributes])
+      [boundary] = Keyword.fetch!(attributes, Boundary)
+      assert boundary.opts[:deps] == [DomainContract]
+      assert boundary.opts[:exports] == [Child]
+      assert module.spark_is() == DomainContract
+      assert {:ok, _} = Artifact.from_beam(beam)
+    end
+  end
+
   defp compile(body) do
     Code.compile_string("""
     defmodule Invalid#{System.unique_integer([:positive])} do
