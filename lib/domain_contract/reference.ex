@@ -97,7 +97,7 @@ defmodule DomainContract.Reference do
     end
   end
 
-  def snapshot(artifact), do: Map.drop(artifact, ["consumes", "subscribe", "digest"])
+  def snapshot(artifact), do: Map.drop(artifact, ["consumes", "subscriptions", "digest"])
 
   def digest(artifact),
     do:

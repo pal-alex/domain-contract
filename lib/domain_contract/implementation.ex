@@ -132,7 +132,7 @@ defmodule DomainContract.Implementation do
     with {:module, _} <- Code.ensure_loaded(module),
          true <- function_exported?(module, :__domain_contracts__, 0),
          true <- function_exported?(module, :__domain_contract_operations__, 0) do
-      actual = [Info.canonical(module)]
+      actual = [module.__contract__()]
 
       expected =
         if is_nil(expected), do: actual, else: Enum.map(List.wrap(expected), &Info.canonical/1)
