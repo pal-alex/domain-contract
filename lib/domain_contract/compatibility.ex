@@ -54,7 +54,7 @@ defmodule DomainContract.Compatibility do
         operations(provider, requirements, "operations", [:input, :output]) ++
           operations(provider, requirements, "commands", [:payload]) ++
           operations(provider, requirements, "notifications", [:notification]) ++
-          props(provider, requirements)
+          props(provider, requirements) ++ slots(provider, requirements)
 
       result(errors)
     end
@@ -92,7 +92,7 @@ defmodule DomainContract.Compatibility do
         end
 
       [] ->
-        [:missing_provider]
+        []
 
       _ ->
         []
@@ -147,6 +147,15 @@ defmodule DomainContract.Compatibility do
        else: [%{surface: "props", reason: :incompatible_type}]
   end
 
+  defp slots(provider, required) do
+    previous = Enum.map(required["slots"] || [], &Map.put(&1, "type", ["list", "map"]))
+    current = Enum.map(provider["slots"] || [], &Map.put(&1, "type", ["list", "map"]))
+
+    if object_subset?(fields(previous), fields(current), [], [], false, false, MapSet.new()),
+      do: [],
+      else: [%{surface: "slots", reason: :incompatible_type}]
+  end
+
   defp fields(props),
     do:
       Enum.map(
@@ -194,6 +203,8 @@ defmodule DomainContract.Compatibility do
   defp subset(["enum", values], right, _, _, _),
     do: Enum.all?(values, &enum_accepted?(&1, right))
 
+  defp subset(["struct", name], ["struct", name], _, _, _), do: true
+  defp subset(["struct", _], "map", _, _, _), do: true
   defp subset("integer", "float", _, _, _), do: true
 
   defp subset(left, "json_scalar", _, _, _) when left in ~w(string integer float boolean null),

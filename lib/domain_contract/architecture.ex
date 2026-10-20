@@ -39,32 +39,80 @@ defmodule DomainContract.Architecture do
       end
 
     changes =
-      for key <-
-            ~w(operations props slots commands notifications consumes subscriptions responsibility description metadata version),
-          old[key] != new[key] do
-        breaking = Enum.any?(errors, &(to_string(Map.get(&1, :surface, "")) == key))
+      Enum.flat_map(
+        ~w(operations props slots commands notifications consumes subscriptions entities responsibility description metadata version),
+        fn key ->
+          if old[key] == new[key] do
+            []
+          else
+            if key in ~w(operations props slots commands notifications consumes subscriptions entities) do
+              identity = fn item ->
+                if key == "subscriptions",
+                  do: item["module"] <> "." <> item["name"],
+                  else: item[if(key == "consumes", do: "module", else: "name")]
+              end
 
-        %{
-          module: module,
-          surface: key,
-          change: :changed,
-          before: old[key],
-          after: new[key],
-          compatible: not breaking,
-          review:
-            key in ~w(responsibility description metadata consumes subscriptions commands notifications)
-        }
-      end
+              previous = Map.new(old[key] || [], &{identity.(&1), &1})
+              current = Map.new(new[key] || [], &{identity.(&1), &1})
+
+              (Map.keys(previous) ++ Map.keys(current))
+              |> Enum.uniq()
+              |> Enum.sort()
+              |> Enum.flat_map(fn name ->
+                if previous[name] == current[name] do
+                  []
+                else
+                  breaking =
+                    Enum.any?(
+                      errors,
+                      &(to_string(Map.get(&1, :surface, "")) == key and
+                          (not Map.has_key?(&1, :name) or &1.name == name))
+                    )
+
+                  change =
+                    cond do
+                      is_nil(previous[name]) -> :added
+                      is_nil(current[name]) -> :removed
+                      true -> :changed
+                    end
+
+                  [
+                    %{
+                      module: module,
+                      surface: key,
+                      name: name,
+                      change: change,
+                      before: previous[name],
+                      after: current[name],
+                      compatible: not breaking,
+                      review: true
+                    }
+                  ]
+                end
+              end)
+            else
+              [
+                %{
+                  module: module,
+                  surface: key,
+                  change: :changed,
+                  before: old[key],
+                  after: new[key],
+                  compatible: true,
+                  review: true
+                }
+              ]
+            end
+          end
+        end
+      )
 
     changes ++
-      for error <- errors,
-          not Enum.any?(
-            ~w(operations props commands notifications),
-            &(&1 == Map.get(error, :surface))
-          ),
+      for error <- Enum.uniq(errors),
+          not Enum.any?(changes, &(&1.surface == Map.get(error, :surface) and not &1.compatible)),
           do: %{
             module: module,
-            surface: "compatibility",
+            surface: Map.get(error, :surface, "compatibility"),
             change: :changed,
             compatible: false,
             detail: error
@@ -81,7 +129,9 @@ defmodule DomainContract.Architecture do
     |> Enum.join("\n")
   end
 
-  defp line(marker, change), do: "#{marker} #{change.module} #{change.surface}: #{change.change}"
+  defp line(marker, change),
+    do:
+      "#{marker} #{change.module} #{change.surface}#{if Map.has_key?(change, :name), do: "(#{change.name})", else: ""}: #{change.change}"
 
   @doc "Review signals for explicit source calls. Dynamic dispatch and semantic cohesion require review."
   def diagnose(sources, contracts) do

@@ -58,7 +58,10 @@ defmodule DomainContract.Compiler do
 
   defmacro __before_compile__(env) do
     artifact = Module.get_attribute(env.module, :domain_contract_base)
-    artifact = DomainContract.UI.compile_props(env.module, artifact)
+
+    artifact =
+      env.module |> DomainContract.UI.compile_props(artifact) |> DomainContract.Info.canonical()
+
     DomainContract.Owned.validate(env, artifact)
     operations = Enum.map(artifact["operations"], & &1["name"])
 

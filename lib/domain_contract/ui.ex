@@ -44,11 +44,16 @@ defmodule DomainContract.UI do
         Enum.map(props, fn attr ->
           type =
             case attr.type do
-              {:struct, _} -> "map"
+              {:struct, module} -> {:struct, module}
               type when is_atom(type) -> to_string(type)
             end
 
-          type = if attr.opts[:values], do: ["enum", attr.opts[:values]], else: type
+          type = if attr.opts[:values], do: {:enum, attr.opts[:values]}, else: type
+
+          type =
+            if Keyword.has_key?(attr.opts, :default) and is_nil(attr.opts[:default]),
+              do: {:nullable, type},
+              else: type
 
           prop = %{
             "name" => to_string(attr.name),
@@ -238,16 +243,28 @@ defmodule DomainContract.UI do
 
   def validate_props(module, props, phase \\ :initial) when phase in [:initial, :controlled] do
     contract = Info.canonical(module)
-    props = Map.new(props, fn {k, v} -> {to_string(k), v} end)
-    declared = contract["props"]
+    entries = Enum.map(props, fn {k, v} -> {to_string(k), v} end)
+    duplicates = length(entries) != length(Enum.uniq_by(entries, &elem(&1, 0)))
+    props = Map.new(entries)
+
+    declared =
+      contract["props"] ++
+        Enum.map(contract["slots"], fn slot ->
+          %{"name" => slot["name"], "type" => ["list", "map"], "required" => slot["required"]}
+        end)
+
     unknown = Map.keys(props) -- Enum.map(declared, & &1["name"])
 
-    if unknown != [],
+    if duplicates or unknown != [],
       do: {:error, {:invalid_props, unknown}},
       else:
         Enum.reduce_while(declared, :ok, fn prop, _ ->
           result =
             cond do
+              prop["required"] and props[prop["name"]] == [] and
+                  Enum.any?(contract["slots"], &(&1["name"] == prop["name"])) ->
+                {:error, {:missing_slot, prop["name"]}}
+
               Map.has_key?(props, prop["name"]) ->
                 Runtime.validate_type(prop["type"], props[prop["name"]], contract["entities"])
 

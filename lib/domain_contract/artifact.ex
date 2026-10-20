@@ -41,9 +41,24 @@ defmodule DomainContract.Artifact do
       is_binary(c["responsibility"]) and String.trim(c["responsibility"]) != "" and
       is_map(c["metadata"]) and schema?(c) and dependencies?(c["consumes"] || []) and
       Enum.all?(c["subscriptions"] || [], fn s ->
-        is_binary(s["module"]) and is_binary(s["name"]) and is_map(s["definition"])
+        is_binary(s["module"]) and is_binary(s["name"]) and is_map(s["definition"]) and
+          s["definition"]["module"] == s["module"] and s["definition"]["name"] == s["name"] and
+          notification_definition?(s["definition"])
       end) and
       (not Map.has_key?(c, "digest") or c["digest"] == DomainContract.Reference.digest(c))
+  end
+
+  defp notification_definition?(definition) do
+    entities = definition["entities"]
+
+    schema?(%{
+      "entities" => entities,
+      "operations" => [],
+      "commands" => [],
+      "notifications" => [],
+      "props" => []
+    }) and
+      type?(definition["payload"], Enum.map(entities, & &1["name"]))
   end
 
   defp schema?(c) do
@@ -86,6 +101,10 @@ defmodule DomainContract.Artifact do
         end)
 
   def type?(type, _) when type in @primitives, do: true
+
+  def type?(["struct", module], _names) when is_binary(module),
+    do: String.starts_with?(module, "Elixir.")
+
   def type?([kind, name], names) when kind in ~w(entity open_entity), do: name in names
   def type?([kind, type], names) when kind in ~w(list dictionary nullable), do: type?(type, names)
 

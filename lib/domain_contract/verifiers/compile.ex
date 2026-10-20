@@ -18,7 +18,7 @@ defmodule DomainContract.Verifiers.Compile do
       version: get.(:version),
       responsibility: get.(:responsibility),
       description: get.(:description),
-      metadata: get.(:metadata) || %{},
+      metadata: get.(:metadata),
       entities:
         Enum.filter(
           items,

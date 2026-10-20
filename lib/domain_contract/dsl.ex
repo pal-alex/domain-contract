@@ -88,7 +88,7 @@ defmodule DomainContract.Dsl do
       version: [type: :pos_integer, required: true],
       responsibility: [type: :string, required: true],
       description: [type: :string],
-      metadata: [type: :map, default: %{}]
+      metadata: [type: :any, default: %{}]
     ],
     entities: [
       @entity,

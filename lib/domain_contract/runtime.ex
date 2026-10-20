@@ -103,6 +103,12 @@ defmodule DomainContract.Runtime do
     end
   end
 
+  defp check(["struct", name], %{__struct__: module}, _, _) when is_atom(module) do
+    if Atom.to_string(module) == name,
+      do: :ok,
+      else: {:error, {:invalid_contract, :invalid_struct}}
+  end
+
   defp check("any", _value, _entities, _path), do: :ok
   defp check("atom", value, _, _) when is_atom(value), do: :ok
   defp check("list", value, _, _) when is_list(value), do: :ok
@@ -111,11 +117,13 @@ defmodule DomainContract.Runtime do
   defp check(["nullable", type], value, entities, path), do: check(type, value, entities, path)
 
   defp check(fields, value, entities, path) when is_map(fields) and is_map(value) do
+    original_size = map_size(value)
     value = normalize_keys(value)
 
-    if Enum.sort(Map.keys(fields)) == Enum.sort(Map.keys(value)),
-      do: each(fields, fn {key, type} -> check(type, value[key], entities, path ++ [key]) end),
-      else: invalid(path ++ [:unknown_or_missing_field])
+    if map_size(value) == original_size and
+         Enum.sort(Map.keys(fields)) == Enum.sort(Map.keys(value)),
+       do: each(fields, fn {key, type} -> check(type, value[key], entities, path ++ [key]) end),
+       else: invalid(path ++ [:unknown_or_missing_field])
   end
 
   defp check("opaque", _value, _entities, _path), do: :ok
@@ -177,17 +185,23 @@ defmodule DomainContract.Runtime do
 
   defp check([kind, name], value, entities, path)
        when kind in ["entity", "open_entity"] and is_map(value) do
+    original = value
     value = normalize_keys(value)
     fields = entities[name]["fields"]
     keys = Enum.map(fields, & &1["name"])
 
     valid_keys? =
       case kind do
-        "entity" -> Enum.all?(Map.keys(value), &(&1 in keys))
-        "open_entity" -> Enum.all?(Map.keys(value), &is_binary/1)
+        "entity" ->
+          Enum.all?(Map.keys(value), &(&1 in keys))
+
+        "open_entity" ->
+          Enum.all?(Map.keys(original), fn key ->
+            is_binary(key) or (is_atom(key) and Atom.to_string(key) in keys)
+          end)
       end
 
-    if valid_keys? do
+    if valid_keys? and map_size(original) == map_size(value) do
       each(fields, &field(&1, value, entities, path))
     else
       invalid(path ++ [:unknown_field])

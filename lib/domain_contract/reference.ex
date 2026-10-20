@@ -17,23 +17,41 @@ defmodule DomainContract.Reference do
     compiled =
       case :code.which(module) do
         path when is_list(path) and path != [] ->
-          case Artifact.from_beam(File.read!(path)) do
-            {:ok, artifact} ->
-              [artifact]
-
-            {:error, :not_contract} ->
+          case File.read(path) do
+            {:error, :enoent} ->
               []
 
-            error ->
-              raise ArgumentError,
-                    "invalid contract metadata #{inspect(module)}: #{inspect(error)}"
+            {:error, reason} ->
+              raise File.Error,
+                reason: reason,
+                action: "read contract metadata",
+                path: to_string(path)
+
+            {:ok, bytes} ->
+              case Artifact.from_beam(bytes) do
+                {:ok, artifact} ->
+                  [artifact]
+
+                {:error, :not_contract} ->
+                  []
+
+                error ->
+                  raise ArgumentError,
+                        "invalid contract metadata #{inspect(module)}: #{inspect(error)}"
+              end
           end
 
         _ ->
           []
       end
 
-    candidates = compiled ++ external
+    loaded =
+      if compiled == [] and :code.is_loaded(module) != false and
+           function_exported?(module, :__contract__, 0),
+         do: [module.__contract__()],
+         else: []
+
+    candidates = compiled ++ loaded ++ external
 
     candidates =
       if candidates == [] do

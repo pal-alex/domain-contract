@@ -237,8 +237,23 @@ defmodule DomainContractTest do
 
     assert Subscriber.__contract__()["consumes"] == []
     assert [%{"name" => "changed"}] = Subscriber.__contract__()["subscriptions"]
-    assert :ok = DomainContract.UI.validate_props(Editor, %{source: %{}})
+    assert :ok = DomainContract.UI.validate_props(Editor, %{source: %{}, inner_block: [%{}]})
     assert {:error, _} = DomainContract.UI.validate_props(Editor, %{})
+    assert {:error, _} = DomainContract.UI.validate_props(Editor, %{source: %{}, inner_block: []})
+
+    assert {:error, _} =
+             DomainContract.UI.validate_props(Editor, %{
+               :source => %{},
+               "source" => %{},
+               :inner_block => [%{}]
+             })
+
+    required_slot =
+      Editor
+      |> Info.canonical()
+      |> Map.update!("slots", &(&1 ++ [%{"name" => "footer", "required" => true}]))
+
+    assert {:error, _} = Compatibility.satisfies(required_slot, Editor)
     assert {:error, _} = DomainContract.UI.validate_props(Editor, %{source: %{}, foreign: 1})
     original = Editor.__contract__()
 
@@ -452,6 +467,13 @@ defmodule DomainContractTest do
       assert module.spark_is() == DomainContract
       assert {:ok, _} = Artifact.from_beam(beam)
     end
+  end
+
+  test "atom enum values remain distinct from wire strings and duplicate field spellings fail" do
+    assert :ok = Runtime.validate_type({:enum, [:updated]}, :updated)
+    assert {:error, _} = Runtime.validate_type({:enum, [:updated]}, "updated")
+    assert {:error, _} = Runtime.input(Echo, :echo, %{:text => "first", "text" => "second"})
+    assert Compatibility.check([Subscriber]) == :ok
   end
 
   defp compile(body) do
