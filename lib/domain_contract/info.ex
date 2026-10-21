@@ -3,7 +3,7 @@ defmodule DomainContract.Info do
   def contract(module) when is_atom(module) do
     if function_exported?(module, :__contract__, 0),
       do: module.__contract__(),
-      else: DomainContract.Reference.resolve(module)
+      else: DomainContract.Reference.compiled(module)
   end
 
   def contract(%DomainContract.Domain{} = owner) do
@@ -19,7 +19,7 @@ defmodule DomainContract.Info do
         %{
           module: Atom.to_string(ref.module),
           optional: ref.optional,
-          definition: DomainContract.Reference.snapshot(ref.definition)
+          schema: DomainContract.Schemas.id(ref.definition)
         }
       end)
       |> Enum.sort_by(& &1.module)
@@ -27,19 +27,34 @@ defmodule DomainContract.Info do
     |> Map.update!(:subscriptions, fn refs ->
       refs
       |> Enum.map(fn ref ->
-        %{module: Atom.to_string(ref.module), name: ref.name, definition: ref.definition}
+        %{
+          module: Atom.to_string(ref.module),
+          name: ref.name,
+          schema: DomainContract.Schemas.id(ref.definition)
+        }
       end)
       |> Enum.sort_by(&{&1.module, &1.name})
     end)
     |> Map.update!(:commands, &named/1)
     |> Map.update!(:notifications, &named/1)
-    |> Map.put(:format_version, 7)
+    |> Map.put(
+      :schemas,
+      DomainContract.Schemas.index(
+        Enum.map(owner.consumes ++ owner.subscriptions, & &1.definition)
+      )
+    )
+    |> Map.put(:format_version, 8)
     |> canonical()
+    |> then(fn artifact ->
+      Map.update!(artifact, "schemas", &Map.delete(&1, DomainContract.Schemas.id(artifact)))
+    end)
     |> then(&Map.put(&1, "digest", DomainContract.Reference.digest(&1)))
   end
 
   def canonical(module) when is_atom(module), do: contract(module)
+  def canonical(%{"format_version" => 8} = map), do: map
   def canonical(map), do: map |> encode() |> Jason.decode!()
+  def normalize(map), do: map |> encode() |> Jason.decode!()
   def json(source), do: source |> canonical() |> encode()
   def encode(value), do: value |> ordered() |> Jason.encode!(pretty: true)
   defp named(items), do: items |> Enum.map(&plain/1) |> Enum.sort_by(& &1.name)

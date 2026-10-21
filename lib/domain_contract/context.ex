@@ -12,7 +12,7 @@ defmodule DomainContract.Context do
   and durable execution remain responsibilities of the adapter.
   """
   @enforce_keys [:consumer, :caller, :dispatch]
-  defstruct [:consumer, :caller, :dispatch]
+  defstruct [:consumer, :caller, :dispatch, :owner, :scope, :execution_id, schemas: []]
 
   @type t :: %__MODULE__{
           consumer: module() | map(),
@@ -24,7 +24,9 @@ defmodule DomainContract.Context do
   def current, do: Process.get(@key)
 
   def bind(context, function) when is_function(function, 0) do
-    {:ok, _} = fetch(context)
+    {:ok, binding} = fetch(context)
+    :ok = DomainContract.SchemaStore.pin(self(), binding.schemas)
+    :ok = DomainContract.SchemaStore.track(self(), binding.consumer)
     previous = Process.get(@key)
     Process.put(@key, context)
 
@@ -36,33 +38,52 @@ defmodule DomainContract.Context do
   end
 
   @doc false
+  def fetch(%__MODULE__{consumer: %{"format_version" => 7} = consumer} = context),
+    do: {:ok, new(DomainContract.Legacy.convert(consumer), context.caller, context.dispatch)}
+
   def fetch(%__MODULE__{} = context), do: {:ok, context}
-  def fetch(%{domain_contract: %__MODULE__{} = context}), do: {:ok, context}
+  def fetch(%{domain_contract: %__MODULE__{} = context}), do: fetch(context)
   def fetch(_), do: {:error, {:invalid_contract, :context}}
 
+  @doc "Registers a context before ownership is handed to a worker or service process."
+  def lease(context, pid) when is_pid(pid) do
+    with {:ok, binding} <- fetch(context),
+         :ok <- DomainContract.SchemaStore.pin(pid, binding.schemas),
+         do: DomainContract.SchemaStore.track(pid, binding.consumer)
+  end
+
   @doc "Captures a validated consumer snapshot once when the trusted adapter creates a context."
-  def new(consumer, caller, dispatch) when not is_nil(caller) and is_function(dispatch, 4) do
+  def new(consumer, caller, dispatch, options \\ [])
+      when not is_nil(caller) and is_function(dispatch, 4) do
     source = if is_atom(consumer), do: DomainContract.Info.canonical(consumer), else: consumer
-    cache = {__MODULE__, :validated_consumer}
+    consumer = DomainContract.Info.canonical(source)
 
     consumer =
-      case Process.get(cache) do
-        {^source, canonical} ->
-          canonical
+      if Map.has_key?(consumer, "schema"),
+        do: DomainContract.Schemas.expand(consumer),
+        else: consumer
 
-        _ ->
-          canonical = DomainContract.Info.canonical(source)
+    case DomainContract.Artifact.validate(consumer) do
+      :ok -> :ok
+      {:error, reason} -> raise ArgumentError, "invalid consumer contract: #{inspect(reason)}"
+    end
 
-          case DomainContract.Artifact.validate(canonical) do
-            :ok ->
-              Process.put(cache, {source, canonical})
-              canonical
+    index = DomainContract.Schemas.index([consumer])
+    :ok = DomainContract.SchemaStore.retain(Keyword.get(options, :holder, self()), index)
 
-            {:error, reason} ->
-              raise ArgumentError, "invalid consumer contract: #{inspect(reason)}"
-          end
-      end
+    compact =
+      consumer
+      |> Map.take(~w(format_version module version consumes subscriptions))
+      |> Map.put("schema", DomainContract.Schemas.id(consumer))
 
-    %__MODULE__{consumer: consumer, caller: caller, dispatch: dispatch}
+    :ok = DomainContract.SchemaStore.track(Keyword.get(options, :holder, self()), compact)
+
+    %__MODULE__{
+      consumer: compact,
+      caller: caller,
+      dispatch: dispatch,
+      owner: consumer["module"],
+      schemas: Map.keys(index)
+    }
   end
 end

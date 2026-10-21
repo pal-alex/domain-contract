@@ -60,5 +60,10 @@ defmodule Mix.Tasks.Domain.Check do
     end
   end
 
-  defp read(paths), do: Enum.flat_map(paths, &(File.read!(&1) |> Jason.decode!() |> List.wrap()))
+  defp read(paths),
+    do:
+      Enum.flat_map(
+        paths,
+        &(File.read!(&1) |> Jason.decode!() |> DomainContract.Schemas.unbundle())
+      )
 end

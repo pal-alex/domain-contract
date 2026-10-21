@@ -60,15 +60,8 @@ defmodule DomainContract.Verifiers.Compile do
               Enum.find(provider["notifications"], &(&1["name"] == to_string(ref.name))) ||
                 raise ArgumentError, "unknown notification #{inspect(ref.module)}.#{ref.name}"
 
-            %{
-              ref
-              | definition: %{
-                  "module" => provider["module"],
-                  "name" => to_string(ref.name),
-                  "payload" => event["payload"],
-                  "entities" => provider["entities"]
-                }
-            }
+            _ = event
+            %{ref | definition: provider}
           end)
     }
 

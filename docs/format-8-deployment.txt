@@ -1,0 +1,86 @@
+Переход Midva на metadata format 8
+
+Область перехода
+Все действия ниже относятся к отдельному развёртыванию после ревью исходников.
+Эта задача не выполняет публикацию, переключение production или изменение данных пользователя.
+Формат 8 изменяет domain-contract metadata, exports, bootstrap и invocation bindings.
+Старый BEAM с metadata 7 нельзя объявлять артефактом 8 заменой JSON или checksum.
+
+Подготовка релиза
+1. Сохранить резервные копии пользовательских БД, документов Core, данных Host,
+   Runner journal и текущих immutable packages. Сохранить текущий/previous snapshot.
+   Результаты, task logs, migration versions и execution IDs не переписывать.
+2. После ревью зафиксировать согласованные изменения domain-contract, SDK, Core,
+   Runner, Plugins, Tunnel и Gmail. Обновить git refs/mix.lock на новые опубликованные
+   ревизии; локальные PATH overrides, использованные в проверке, не являются release pins.
+   Не публиковать смешанный набор старого framework и новых metadata.
+3. Сначала собрать domain-contract/SDK и exports владельцев командой
+   mix domain.export --output priv/domain_contracts.json.
+   Затем выбрать нужные владельцы для независимого потребителя:
+   mix domain.inputs owners.json --module Elixir.Example.Owner --output priv/domain_inputs.json
+   В config :domain_contract, :metadata_paths указать этот выбранный bundle.
+   Пересобрать consumers; повторить export/check/diff, package и обязательные проверки.
+4. Собрать Core/Host image и Runner distribution с той же библиотекой и SDK.
+   SDK vendor должен соответствовать новому lock. Для локальной проверки стенд
+   захватывает явно выбранный DOMAIN_CONTRACT_PATH и включает его байты в cache key;
+   production source vendor по-прежнему использует точный опубликованный git revision.
+5. Пересобрать все действующие .midva parts в формат 8; проверить SHA-256 исходных
+   скачанных байтов. Для каждого server/runner target проверить выбранную композицию,
+   уникальность владельцев и входящие/исходящие consumes, commands, subscriptions.
+
+Сохранённые JSON и executions
+mix domain.migrate old.json new.json преобразует старый JSON bundle в format 8;
+это ограниченный входной конвертер, не перепаковка старого исполняемого BEAM.
+Старые результаты задач читаются без восстановления их каталогов и кода.
+Для назначенного/работающего старого execution есть адресная операция:
+MidvaPlugins.Execution.RemoteAuthorization.Migration.migrate(trusted_context, execution_id)
+Контекст принадлежит Execution и использует его namespace хранения. Операция читает
+только конкретный прежний catalog record/package_refs и требуемые схемы, проверяет
+исходные разрешения и CAS-добавляет contract_bindings. Она не запускает работу,
+не меняет execution identity, input, ownership token, статус или эффекты. Повтор
+идемпотентен. Выполнить миграцию нужных живых executions до удаления старых записей.
+Отсутствующие/несогласованные metadata дают явную ошибку; автоматический новый
+execution запрещён. Ручной повтор создаёт новый execution_id на текущем коде.
+
+Активация framework
+Первый переход старых framework state/closures выполняется согласованной заменой
+Host/Runner runtime в существующем deployment lifecycle. Он не является обычной
+горячей заменой одного plugin package. Согласовать завершение/миграцию локального
+состояния процессов и доставку Runner journal; сохранить persistent data resource.
+Ограниченный адаптер читает старую декларацию Context 7 при обращении, но не заменяет
+миграцию произвольного внутреннего состояния старой VM. Не обещать бесшовную
+горячую замену всего framework 7 -> 8.
+После запуска формат-8 Host восстанавливает только текущие пакеты и активные
+execution bindings; schemas живых назначений учитываются при admission обновлений.
+Проверить readiness, plugin availability, регистрацию Runner, Stop, результат
+сохранённой задачи и идемпотентную повторную доставку одного эффекта.
+
+Дальнейшие обновления и возврат кода
+Применять существующий Deployment.activate с expected_snapshot_id. Проверка
+целостности, текущей композиции и живых прав предшествует установке кода. CodeLoader
+получает изменённые BEAM; ownership и soft_purge сохранены. old_code_in_use означает
+повторить после завершения пользователей старой версии; их нельзя принудительно purge.
+Возврат previous snapshot проходит тот же путь. Он может быть отклонён, если текущий
+потребитель уже требует новой операции. Он возвращает код, не БД и не migrations.
+Хранить предыдущий комплект последнего обновления и нужные живым bindings schemas.
+Не удалять архивы/данные задач в рамках этого перехода. Архивные каталоги для обычного
+запуска/обновления не нужны; прежние metadata используются только адресным конвертером.
+
+Воспроизведение измерений этого checkout
+См. bench/metadata.exs и bench/full_host.exs; команды, SHA, исходные backups и результаты:
+/home/pala/projects/contract-simplification-evidence-20261021.
+run_profile.py before|after [metadata] использует network none, --cpus 1,
+--memory 1024m --memory-swap 1024m и ERL_FLAGS '+S 1:1 +SDcpu 1 +SDio 1'.
+Для серии: CONTRACT_SERIES=6 PROFILE_SUFFIX=-series python3 run_profile.py after.
+Перед повтором удалить только собственный остановленный container с тем же именем
+или выбрать новый PROFILE_SUFFIX. Бизнес-хранилище стенда тестовое; production DB
+и облачные credentials в измерениях не используются.
+
+Расширение прав собственного кода при живом старом контексте проверяется отдельно.
+Если новая реализация требует зависимость/операцию, которой нет в старом доверенном
+контексте этого же владельца, admission возвращает live_context_requires_migration.
+Изменение состава его подписок даёт live_subscription_requires_migration. Завершить
+этот вызов либо мигрировать/перезапустить адресный процесс перед повтором. Старому
+контексту нельзя автоматически выдать новые права. Получатель маршрута получает
+lease ещё до ответа диспетчера, поэтому подготовка обновления видит и вызов,
+который получил binding, но ещё не вошёл в обработчик.

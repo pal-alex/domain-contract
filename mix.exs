@@ -19,5 +19,5 @@ defmodule DomainContract.MixProject do
     ]
   end
 
-  def application, do: [extra_applications: [:crypto]]
+  def application, do: [mod: {DomainContract.Application, []}, extra_applications: [:crypto]]
 end

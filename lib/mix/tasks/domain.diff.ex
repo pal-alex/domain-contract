@@ -12,7 +12,8 @@ defmodule Mix.Tasks.Domain.Diff do
           "usage: mix domain.diff before.json after.json [--json report.json] [--sources 'lib/**/*.ex']"
         )
 
-    [before, after_state] = Enum.map(paths, &(File.read!(&1) |> Jason.decode!() |> List.wrap()))
+    [before, after_state] =
+      Enum.map(paths, &(File.read!(&1) |> Jason.decode!() |> DomainContract.Schemas.unbundle()))
 
     sources =
       options

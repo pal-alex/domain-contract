@@ -4,6 +4,20 @@ defmodule DomainContract.Reference do
   alias DomainContract.Info
   defstruct [:module, :definition, optional: false, __spark_metadata__: nil]
 
+  @doc "Reads the module's own compiled metadata without executing or loading its code."
+  def compiled(module) do
+    case :code.which(module) do
+      path when is_list(path) and path != [] ->
+        with {:ok, bytes} <- File.read(path),
+             {:ok, artifact} <- Artifact.from_beam(bytes),
+             do: artifact,
+             else: (_ -> resolve(module))
+
+      _ ->
+        resolve(module)
+    end
+  end
+
   def resolve(module) when is_atom(module) and not is_nil(module) do
     paths = Application.get_env(:domain_contract, :metadata_paths, [])
 
@@ -51,7 +65,7 @@ defmodule DomainContract.Reference do
          do: [module.__contract__()],
          else: []
 
-    candidates = compiled ++ loaded ++ external
+    candidates = if external == [], do: compiled ++ loaded, else: external
 
     candidates =
       if candidates == [] do
@@ -93,11 +107,26 @@ defmodule DomainContract.Reference do
       {:ok, artifact} = Artifact.from_beam(bytes)
       artifact
     else
-      Jason.decode!(bytes)
+      case Jason.decode!(bytes) do
+        %{"format_version" => 8, "contracts" => _} = bundle ->
+          DomainContract.Schemas.unbundle(bundle)
+
+        value ->
+          value
+      end
     end
   end
 
-  def snapshot(artifact), do: Map.drop(artifact, ["consumes", "subscriptions", "digest"])
+  def snapshot(artifact), do: DomainContract.Schemas.definition(artifact)
+
+  def definition(reference, source \\ %{}), do: DomainContract.Schemas.fetch!(reference, source)
+
+  @doc "Captures a compact requirement from an explicitly selected owner; no provider code is loaded."
+  def requirement(owner, optional \\ false) do
+    owner = Info.canonical(owner)
+    DomainContract.SchemaStore.retain(self(), DomainContract.Schemas.index([owner]))
+    owner |> DomainContract.Schemas.reference() |> Map.put("optional", optional)
+  end
 
   def digest(artifact),
     do:

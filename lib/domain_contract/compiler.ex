@@ -60,7 +60,7 @@ defmodule DomainContract.Compiler do
     artifact = Module.get_attribute(env.module, :domain_contract_base)
 
     artifact =
-      env.module |> DomainContract.UI.compile_props(artifact) |> DomainContract.Info.canonical()
+      env.module |> DomainContract.UI.compile_props(artifact) |> DomainContract.Info.normalize()
 
     public = DomainContract.Reference.snapshot(artifact)
 
@@ -68,7 +68,7 @@ defmodule DomainContract.Compiler do
       Map.update!(artifact, "consumes", fn references ->
         Enum.map(references, fn reference ->
           if reference["module"] == artifact["module"],
-            do: Map.put(reference, "definition", public),
+            do: Map.put(reference, "schema", DomainContract.Schemas.id(public)),
             else: reference
         end)
       end)
@@ -98,7 +98,7 @@ defmodule DomainContract.Compiler do
       Module.register_attribute(__MODULE__, :domain_contract_implementation, persist: true)
       @domain_contract_artifact unquote(Macro.escape(artifact))
       @domain_contract_implementation %{
-        contracts: [unquote(Macro.escape(artifact))],
+        contracts: [unquote(artifact["module"])],
         operations: unquote(covered)
       }
       @doc false

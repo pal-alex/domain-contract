@@ -45,7 +45,10 @@ defmodule DomainContract.Owned do
                 description: "undeclared dependency #{inspect(target)} for #{inspect(env.module)}"
               )
 
-          reference["definition"]
+          DomainContract.Reference.definition(
+            reference,
+            Map.put(artifact, "schemas", DomainContract.Schemas.index([artifact]))
+          )
         end
 
       unless Enum.any?(provider[surface], &(&1["name"] == name)),

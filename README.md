@@ -130,6 +130,28 @@ subscribers only. This is neither a durable event bus nor an iframe postMessage
 transport. Acceptance does not imply command completion. Normal `send_update`
 assign updates remain valid; reserved command/notification bypasses are diagnostics.
 
+## Metadata and runtime lifetime
+
+Format 8 exports contain a `contracts` list of owner/dependency declarations and
+one `schemas` index keyed by public revision. A dependency contains `module`,
+`schema` and `optional`; a subscription adds the event `name`. Self references
+resolve to the owner's definition. `mix domain.export` derives this bundle from
+persisted BEAM attributes without activating provider code. Implementation metadata
+names the primary owner instead of repeating its artifact.
+
+Compilation resolves external dependencies only against explicitly selected metadata
+inputs. Midva stores those in `priv/domain_inputs.json`. Package admission verifies
+the exact checksum, source BEAM metadata and the selected graph. A version or digest
+never substitutes for directional compatibility. Module/version pairs are not frozen
+across unrelated historical installations.
+
+Trusted contexts retain caller identity and compact declaration references. The
+runtime schema store retains revisions for current installations, the previous
+installation, prepared candidates and monitored live context owners. Replacing an
+installation releases completed revisions after their final holder exits. Value
+validation selects the operation and its reachable entity declarations. An expired
+context fails explicitly; it never borrows a replacement's permissions.
+
 ## Architecture review
 
 `mix domain.export --output architecture.json` exports owner BEAM metadata without
@@ -157,3 +179,5 @@ dependencies emits a composition warning. These are review heuristics, not error
 Dynamic dispatch, aliases, business cohesion and prose obligations require human review and
 behavioral tests. Boundary continues to enforce configured implementation boundaries.
 Run `mix verify` for formatting, compilation with warnings as errors and all tests.
+
+Format transition and coordinated runtime rollout: [format 8 deployment](docs/format-8-deployment.txt).

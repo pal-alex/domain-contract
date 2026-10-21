@@ -14,33 +14,38 @@ defmodule DomainContract.Compatibility do
 
   def check(candidates, authorities \\ []) do
     with :ok <- validate(candidates ++ authorities) do
-      candidates = Enum.map(candidates, &Info.canonical/1)
-      providers = Enum.group_by(candidates, & &1["module"])
-
-      duplicates =
-        for {module, [_ | rest]} <- providers,
-            rest != [],
-            do: %{module: module, reason: :multiple_providers}
-
-      errors =
-        for consumer <- candidates,
-            ref <- consumer["consumes"] || [],
-            reason <- dependency(ref, providers),
-            do: %{consumer: consumer["module"], module: ref["module"], reason: reason}
-
-      subscriptions =
-        for consumer <- candidates,
-            ref <- consumer["subscriptions"] || [],
-            reason <- subscription(ref, providers),
-            do: %{consumer: consumer["module"], module: ref["module"], reason: reason}
-
-      result(duplicates ++ errors ++ subscriptions)
+      check_links(candidates)
     end
+  end
+
+  @doc "Checks links between independently validated artifacts without repeating artifact verification."
+  def check_links(candidates) do
+    candidates = Enum.map(candidates, &Info.canonical/1)
+    providers = Enum.group_by(candidates, & &1["module"])
+
+    duplicates =
+      for {module, [_ | rest]} <- providers,
+          rest != [],
+          do: %{module: module, reason: :multiple_providers}
+
+    errors =
+      for consumer <- candidates,
+          ref <- consumer["consumes"] || [],
+          reason <- dependency(ref, consumer, providers),
+          do: %{consumer: consumer["module"], module: ref["module"], reason: reason}
+
+    subscriptions =
+      for consumer <- candidates,
+          ref <- consumer["subscriptions"] || [],
+          reason <- subscription(ref, consumer, providers),
+          do: %{consumer: consumer["module"], module: ref["module"], reason: reason}
+
+    result(duplicates ++ errors ++ subscriptions)
   end
 
   def provided(source) do
     owner = Info.canonical(source)
-    [%{"module" => owner["module"], "definition" => DomainContract.Reference.snapshot(owner)}]
+    [DomainContract.Schemas.reference(owner)]
   end
 
   def satisfies(provider, requirements) do
@@ -60,13 +65,16 @@ defmodule DomainContract.Compatibility do
     end
   end
 
-  defp dependency(ref, providers) do
+  defp dependency(ref, consumer, providers) do
     case Map.get(providers, ref["module"], []) do
       [] ->
         if ref["optional"], do: [], else: [:missing_provider]
 
       [provider] ->
-        case satisfies(provider, ref["definition"]) do
+        case satisfies(
+               provider,
+               DomainContract.Reference.definition(ref, DomainContract.Schemas.index([consumer]))
+             ) do
           :ok -> []
           {:error, errors} -> errors
         end
@@ -76,7 +84,7 @@ defmodule DomainContract.Compatibility do
     end
   end
 
-  defp subscription(ref, providers) do
+  defp subscription(ref, consumer, providers) do
     case Map.get(providers, ref["module"], []) do
       [provider] ->
         case Enum.find(provider["notifications"], &(&1["name"] == ref["name"])) do
@@ -84,11 +92,19 @@ defmodule DomainContract.Compatibility do
             [:missing_notification]
 
           event ->
-            old = ref["definition"]
+            required =
+              DomainContract.Reference.definition(ref, DomainContract.Schemas.index([consumer]))
 
-            if subset?(event["payload"], old["payload"], provider["entities"], old["entities"]),
-              do: [],
-              else: [:incompatible_notification]
+            old = Enum.find(required["notifications"], &(&1["name"] == ref["name"]))
+
+            if subset?(
+                 event["payload"],
+                 old["payload"],
+                 provider["entities"],
+                 required["entities"]
+               ),
+               do: [],
+               else: [:incompatible_notification]
         end
 
       [] ->

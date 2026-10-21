@@ -154,8 +154,11 @@ defmodule DomainContract.Implementation do
              [{:__domain_contracts__, 0}, {:__domain_contract_operations__, 0}],
              &(&1 in exports)
            ),
-         [%{contracts: actual, operations: covered}] <-
-           Keyword.get(Keyword.fetch!(chunks, :attributes), :domain_contract_implementation) do
+         [%{contracts: identities, operations: covered}] <-
+           Keyword.get(Keyword.fetch!(chunks, :attributes), :domain_contract_implementation),
+         {:ok, artifact} <- DomainContract.Artifact.from_beam(beam),
+         true <- identities == [artifact["module"]] do
+      actual = [artifact]
       expected = Enum.map(List.wrap(expected), &Info.canonical/1)
 
       if operations(actual) == [] or {:call, 3} in exports,

@@ -10,8 +10,11 @@ defmodule DomainContract.UI do
     @compile {:no_warn_undefined, Phoenix.LiveView}
   end
 
+  alias DomainContract.Context
   alias DomainContract.Info
   alias DomainContract.Runtime
+  alias DomainContract.SchemaStore
+  alias DomainContract.Schemas
   @participants {__MODULE__, :participants}
   @token {__MODULE__, :token}
 
@@ -131,25 +134,43 @@ defmodule DomainContract.UI do
   @doc "Registers one active addressed participant in the current LiveView process."
   def mount(socket, module, id, kind \\ :component) when kind in [:component, :view, :context] do
     contract = Info.canonical(module)
+    holder = {self(), make_ref()}
+
+    binding =
+      Context.new(contract, module, fn _, _, _, _ -> {:error, :unbound} end, holder: holder)
+
     token()
+    previous = participants()
 
-    Process.put(
-      @participants,
-      Map.put(participants(), {module, id}, %{contract: contract, kind: kind})
-    )
+    candidate =
+      Map.put(previous, {module, id}, %{contract: binding.consumer, kind: kind, holder: holder})
 
-    socket
+    try do
+      prepare_events(candidate)
+      Process.put(@participants, candidate)
+      if old = previous[{module, id}], do: SchemaStore.release(old.holder)
+      socket
+    rescue
+      error ->
+        SchemaStore.release(holder)
+        reraise error, __STACKTRACE__
+    end
   end
 
-  def unmount(module, id),
-    do: Process.put(@participants, Map.delete(participants(), {module, id}))
+  def unmount(module, id) do
+    {old, retained} = Map.pop(participants(), {module, id})
+    if old, do: SchemaStore.release(old.holder)
+    Process.delete({__MODULE__, :event_links})
+    Process.put(@participants, retained)
+  end
 
   def dispatch_command(owner, {module, id}, name, payload) do
     with {:ok, ref} <- Runtime.dependency(owner, module),
-         {:ok, message} <- message(ref["definition"], "commands", name),
-         :ok <- Runtime.validate_type(message["payload"], payload, ref["definition"]["entities"]),
+         required = DomainContract.Reference.definition(ref),
+         {:ok, message} <- message(required, "commands", name),
+         :ok <- Runtime.validate_type(message["payload"], payload, required["entities"]),
          {:ok, target} <- Map.fetch(participants(), {module, id}),
-         :ok <- DomainContract.Compatibility.satisfies(target.contract, ref["definition"]) do
+         :ok <- SchemaStore.approve(ref["schema"], target.contract["schema"]) do
       send(self(), {__MODULE__, token(), {module, id}, {:command, to_string(name), payload}})
       :ok
     else
@@ -159,9 +180,14 @@ defmodule DomainContract.UI do
   end
 
   def dispatch_event(owner, socket, name, payload) do
-    contract = Info.canonical(owner)
+    emitter =
+      Enum.find_value(participants(), fn {{module, _}, target} ->
+        if module == owner, do: target
+      end)
 
-    with true <- Enum.any?(participants(), fn {{module, _}, _} -> module == owner end),
+    contract = if emitter, do: Schemas.fetch!(emitter.contract)
+
+    with true <- not is_nil(emitter),
          {:ok, event} <- message(contract, "notifications", name),
          :ok <- Runtime.validate_type(event["payload"], payload, contract["entities"]) do
       participants()
@@ -173,15 +199,7 @@ defmodule DomainContract.UI do
           )
 
         Enum.each(subscriptions, fn subscription ->
-          required = subscription["definition"]
-
-          unless DomainContract.Compatibility.subset?(
-                   event["payload"],
-                   required["payload"],
-                   contract["entities"],
-                   required["entities"]
-                 ),
-                 do: raise(ArgumentError, "incompatible active notification subscription")
+          :ok = event_link(subscription, emitter.contract["schema"], contract)
 
           send(
             self(),
@@ -195,6 +213,42 @@ defmodule DomainContract.UI do
       false -> {:error, :unmounted_emitter}
       error -> error
     end
+  end
+
+  defp prepare_events(participants) do
+    Process.delete({__MODULE__, :event_links})
+
+    for {_address, target} <- participants,
+        subscription <- target.contract["subscriptions"],
+        {{module, _}, emitter} <- participants,
+        Atom.to_string(module) == subscription["module"] do
+      :ok = event_link(subscription, emitter.contract["schema"], Schemas.fetch!(emitter.contract))
+    end
+  end
+
+  defp event_link(subscription, offered, contract) do
+    cache = {__MODULE__, :event_links}
+    key = {subscription["schema"], offered, subscription["name"]}
+    checked = Process.get(cache, MapSet.new())
+
+    unless MapSet.member?(checked, key) do
+      required = Schemas.fetch!(subscription)
+      event = Enum.find(contract["notifications"], &(&1["name"] == subscription["name"]))
+      old = Enum.find(required["notifications"], &(&1["name"] == subscription["name"]))
+
+      unless event && old &&
+               DomainContract.Compatibility.subset?(
+                 event["payload"],
+                 old["payload"],
+                 contract["entities"],
+                 required["entities"]
+               ),
+             do: raise(ArgumentError, "incompatible active notification subscription")
+
+      Process.put(cache, MapSet.put(checked, key))
+    end
+
+    :ok
   end
 
   def relay({__MODULE__, secret, address, message}, socket) do
@@ -235,8 +289,11 @@ defmodule DomainContract.UI do
         &(&1["module"] == Atom.to_string(emitter) and &1["name"] == name)
       ) || raise ArgumentError, "undeclared subscription"
 
-    definition = subscription["definition"]
-    :ok = Runtime.validate_type(definition["payload"], payload, definition["entities"])
+    required =
+      DomainContract.Reference.definition(subscription, DomainContract.Schemas.index([contract]))
+
+    definition = Enum.find(required["notifications"], &(&1["name"] == subscription["name"]))
+    :ok = Runtime.validate_type(definition["payload"], payload, required["entities"])
     module.handle_notification(emitter, name, payload, socket)
   end
 

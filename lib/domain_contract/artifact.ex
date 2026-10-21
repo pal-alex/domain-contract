@@ -35,30 +35,55 @@ defmodule DomainContract.Artifact do
   end
 
   defp valid?(c) do
-    c["format_version"] == 7 and is_binary(c["module"]) and
+    c["format_version"] == 8 and is_binary(c["module"]) and
       String.starts_with?(c["module"], "Elixir.") and
       is_integer(c["version"]) and c["version"] > 0 and c["kind"] in ~w(domain ui) and
       is_binary(c["responsibility"]) and String.trim(c["responsibility"]) != "" and
-      is_map(c["metadata"]) and schema?(c) and dependencies?(c["consumes"] || []) and
-      Enum.all?(c["subscriptions"] || [], fn s ->
-        is_binary(s["module"]) and is_binary(s["name"]) and is_map(s["definition"]) and
-          s["definition"]["module"] == s["module"] and s["definition"]["name"] == s["name"] and
-          notification_definition?(s["definition"])
-      end) and
+      is_map(c["metadata"]) and schema?(c) and schemas?(c) and references?(c) and
       (not Map.has_key?(c, "digest") or c["digest"] == DomainContract.Reference.digest(c))
   end
 
-  defp notification_definition?(definition) do
-    entities = definition["entities"]
+  defp schemas?(c) do
+    schemas = Map.get(c, "schemas", %{})
 
-    schema?(%{
-      "entities" => entities,
-      "operations" => [],
-      "commands" => [],
-      "notifications" => [],
-      "props" => []
-    }) and
-      type?(definition["payload"], Enum.map(entities, & &1["name"]))
+    is_map(schemas) and
+      Enum.all?(schemas, fn {id, schema} ->
+        id == DomainContract.Schemas.id(schema) and
+          not Map.has_key?(schema, "schemas") and not Map.has_key?(schema, "consumes") and
+          valid?(schema)
+      end)
+  end
+
+  defp references?(c) do
+    references = c["consumes"] || []
+    subscriptions = c["subscriptions"] || []
+
+    if references == [] and subscriptions == [] do
+      true
+    else
+      index =
+        Map.put(
+          Map.get(c, "schemas", %{}),
+          DomainContract.Schemas.id(c),
+          DomainContract.Schemas.definition(c)
+        )
+
+      unique?(references, "module") and
+        Enum.all?(references, fn ref ->
+          is_binary(ref["module"]) and is_boolean(ref["optional"]) and reference?(ref, index)
+        end) and
+        Enum.all?(subscriptions, fn ref ->
+          is_binary(ref["module"]) and is_binary(ref["name"]) and reference?(ref, index) and
+            Enum.any?(index[ref["schema"]]["notifications"], &(&1["name"] == ref["name"]))
+        end)
+    end
+  end
+
+  defp reference?(ref, index) do
+    definition = index[ref["schema"]]
+
+    is_binary(ref["schema"]) and not Map.has_key?(ref, "definition") and
+      is_map(definition) and definition["module"] == ref["module"]
   end
 
   defp schema?(c) do
@@ -91,14 +116,6 @@ defmodule DomainContract.Artifact do
         do: op[side] in names,
         else: is_nil(op[side]) and type?(op[side <> "_type"], names)
       )
-
-  defp dependencies?(refs),
-    do:
-      unique?(refs, "module") and
-        Enum.all?(refs, fn r ->
-          is_binary(r["module"]) and is_boolean(r["optional"]) and
-            r["definition"]["module"] == r["module"] and valid?(r["definition"])
-        end)
 
   def type?(type, _) when type in @primitives, do: true
 

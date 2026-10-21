@@ -11,15 +11,13 @@ defmodule DomainContract.Runtime do
   def invoke(owner, target, operation, input, context) when is_atom(target) do
     with {:ok, consumer, binding} <- consumer(owner, context),
          {:ok, reference} <- dependency(consumer, target),
+         :ok <- pin(binding),
          :ok <- reference_input(reference, operation, input) do
       result =
         if binding do
           binding.dispatch.(target, to_string(operation), input, context)
         else
-          provider = Info.canonical(target)
-
-          with :ok <- DomainContract.Compatibility.satisfies(provider, reference["definition"]),
-               do: target.call(to_string(operation), input, context)
+          target.call(to_string(operation), input, context)
         end
 
       case result do
@@ -36,6 +34,13 @@ defmodule DomainContract.Runtime do
   end
 
   def invoke(_, _, _, _, _), do: {:error, {:invalid_contract, :invocation}}
+
+  defp pin(nil), do: :ok
+
+  defp pin(binding) do
+    with :ok <- DomainContract.SchemaStore.pin(self(), binding.schemas),
+         do: DomainContract.SchemaStore.track(self(), binding.consumer)
+  end
 
   defp consumer(owner, nil), do: {:ok, Info.canonical(owner), nil}
 
@@ -54,10 +59,17 @@ defmodule DomainContract.Runtime do
   def input(source, operation, value), do: validate(source, operation, :input, value)
   def output(source, operation, value), do: validate(source, operation, :output, value)
 
+  def dependency(%{"format_version" => 7} = consumer, module),
+    do: dependency(DomainContract.Legacy.convert(consumer), module)
+
   def dependency(consumer, module) do
     name = if is_atom(module), do: Atom.to_string(module), else: module
+    consumer = canonical(consumer)
 
-    case Enum.filter(canonical(consumer)["consumes"] || [], &(&1["module"] == name)) do
+    if Map.has_key?(consumer, "schemas"),
+      do: DomainContract.SchemaStore.retain(self(), DomainContract.Schemas.index([consumer]))
+
+    case Enum.filter(consumer["consumes"] || [], &(&1["module"] == name)) do
       [reference] -> {:ok, reference}
       [] -> {:error, {:invalid_contract, :undeclared_dependency}}
       _ -> {:error, {:invalid_contract, :ambiguous_contract}}
@@ -65,10 +77,22 @@ defmodule DomainContract.Runtime do
   end
 
   def reference_input(reference, operation, value),
-    do: input(reference["definition"], operation, value)
+    do:
+      input(
+        DomainContract.Reference.definition(reference)
+        |> DomainContract.Schemas.operation(operation),
+        operation,
+        value
+      )
 
   def reference_output(reference, operation, value),
-    do: output(reference["definition"], operation, value)
+    do:
+      output(
+        DomainContract.Reference.definition(reference)
+        |> DomainContract.Schemas.operation(operation),
+        operation,
+        value
+      )
 
   def validate_type(type, value, entities \\ [], path \\ []),
     do:
@@ -81,7 +105,7 @@ defmodule DomainContract.Runtime do
 
   # Captured compiler metadata is already canonical. Invocation must not rescan
   # build inputs or serialize the complete dependency graph for each value.
-  defp canonical(%{"format_version" => 7, "module" => module} = contract) when is_binary(module),
+  defp canonical(%{"format_version" => 8, "module" => module} = contract) when is_binary(module),
     do: contract
 
   defp canonical(source), do: Info.canonical(source)

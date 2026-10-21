@@ -110,7 +110,15 @@ defmodule DomainContractTest do
 
   test "one inline owner and module-only dependencies retain immutable requirements" do
     assert Echo.__contract__()["module"] == Atom.to_string(Echo)
-    assert [%{"module" => module, "definition" => snapshot}] = Client.__contract__()["consumes"]
+    assert [%{"module" => module, "schema" => schema}] = Client.__contract__()["consumes"]
+
+    snapshot =
+      DomainContract.Reference.definition(
+        hd(Client.__contract__()["consumes"]),
+        Client.__contract__()
+      )
+
+    assert schema == DomainContract.Schemas.id(snapshot)
     assert module == Atom.to_string(Echo)
     assert snapshot["operations"] == Echo.__contract__()["operations"]
     refute Map.has_key?(hd(Client.__contract__()["consumes"]), "version")
@@ -136,7 +144,8 @@ defmodule DomainContractTest do
     )
 
     [reference] = module.__contract__()["consumes"]
-    assert reference["definition"] == DomainContract.Reference.snapshot(module.__contract__())
+    assert reference["schema"] == DomainContract.Schemas.id(module.__contract__())
+    assert module.__contract__()["schemas"] == %{}
     assert :ok = DomainContract.Artifact.validate(module)
     :code.purge(module)
     :code.delete(module)
@@ -182,7 +191,7 @@ defmodule DomainContractTest do
     Application.put_env(:domain_contract, :metadata_paths, [path])
 
     try do
-      assert_raise ArgumentError, ~r/ambiguous/, fn -> DomainContract.Reference.resolve(Echo) end
+      assert DomainContract.Reference.resolve(Echo)["version"] == 73
       assert Client.run(%{text: "captured"}) == {:ok, "captured"}
     after
       Application.put_env(:domain_contract, :metadata_paths, previous)
@@ -342,6 +351,13 @@ defmodule DomainContractTest do
     DomainContract.UI.mount(%{}, Editor, "b", :context)
     DomainContract.UI.mount(%{}, Subscriber, "one", :context)
     DomainContract.UI.mount(%{}, Subscriber, "two", :context)
+
+    assert Enum.all?(Process.get({DomainContract.UI, :participants}), fn {_address, participant} ->
+             is_binary(participant.contract["schema"]) and
+               not Map.has_key?(participant.contract, "operations") and
+               not Map.has_key?(participant.contract, "schemas")
+           end)
+
     assert :ok = Page.close("b")
     assert_receive {DomainContract.UI, _, {Editor, "b"}, _} = message
     assert {:halt, %{closed: true}} = DomainContract.UI.relay(message, %{})
@@ -393,6 +409,11 @@ defmodule DomainContractTest do
              [{"x.ex", "__MODULE__.Private.save(%{})"}],
              [Editor]
            ) == []
+
+    target = String.trim_leading(Atom.to_string(Echo), "Elixir.") <> ".Private"
+
+    assert [%{reason: :private_owner_call, target: ^target}] =
+             Architecture.diagnose([{"consumer.ex", target <> ".read()"}], [Echo])
   end
 
   @tag :tmp_dir

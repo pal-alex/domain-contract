@@ -36,7 +36,8 @@ defmodule Mix.Tasks.Domain.Export do
         end
       end)
 
-    json = DomainContract.Info.encode(contracts) <> "\n"
+    json = contracts |> DomainContract.Schemas.bundle() |> DomainContract.Info.encode()
+    json = json <> "\n"
 
     case options[:output] do
       nil -> Mix.shell().info(json)
