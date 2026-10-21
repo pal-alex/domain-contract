@@ -75,7 +75,10 @@ defmodule DomainContract.Artifact do
         function.()
 
       checked ->
-        key = {kind, value}
+        # Keep a content fingerprint instead of retaining expanded owner graphs
+        # in the process dictionary. This is derived from the actual value, not
+        # a claimed schema ID, and lives only inside the admission scope.
+        key = {kind, :crypto.hash(:sha256, :erlang.term_to_binary(value, [:deterministic]))}
 
         case Map.fetch(checked, key) do
           {:ok, result} ->
