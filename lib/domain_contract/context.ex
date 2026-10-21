@@ -24,36 +24,33 @@ defmodule DomainContract.Context do
   def current, do: Process.get(@key)
 
   def bind(context, function) when is_function(function, 0) do
-    {:ok, binding} = fetch(context)
-    :ok = DomainContract.SchemaStore.pin(self(), binding.schemas)
-    :ok = DomainContract.SchemaStore.track(self(), binding.consumer)
-    previous = Process.get(@key)
-    Process.put(@key, context)
+    with {:ok, _binding} <- fetch(context) do
+      previous = Process.get(@key)
+      Process.put(@key, context)
 
-    try do
-      function.()
-    after
-      if is_nil(previous), do: Process.delete(@key), else: Process.put(@key, previous)
+      try do
+        function.()
+      after
+        if is_nil(previous), do: Process.delete(@key), else: Process.put(@key, previous)
+      end
     end
   end
 
   @doc false
-  def fetch(%__MODULE__{consumer: %{"format_version" => 7} = consumer} = context),
-    do: {:ok, new(DomainContract.Legacy.convert(consumer), context.caller, context.dispatch)}
+  def fetch(%__MODULE__{consumer: %{"format_version" => version}}) when version != 8,
+    do: {:error, {:invalid_contract, :format_version}}
 
-  def fetch(%__MODULE__{} = context), do: {:ok, context}
+  def fetch(%__MODULE__{} = context) do
+    if Enum.all?(context.schemas, &DomainContract.SchemaStore.available?/1),
+      do: {:ok, context},
+      else: {:error, {:invalid_contract, :expired_context}}
+  end
+
   def fetch(%{domain_contract: %__MODULE__{} = context}), do: fetch(context)
   def fetch(_), do: {:error, {:invalid_contract, :context}}
 
-  @doc "Registers a context before ownership is handed to a worker or service process."
-  def lease(context, pid) when is_pid(pid) do
-    with {:ok, binding} <- fetch(context),
-         :ok <- DomainContract.SchemaStore.pin(pid, binding.schemas),
-         do: DomainContract.SchemaStore.track(pid, binding.consumer)
-  end
-
-  @doc "Captures a validated consumer snapshot once when the trusted adapter creates a context."
-  def new(consumer, caller, dispatch, options \\ [])
+  @doc "Captures a validated consumer without retaining schemas. The trusted installer owns their lifetime."
+  def new(consumer, caller, dispatch)
       when not is_nil(caller) and is_function(dispatch, 4) do
     source = if is_atom(consumer), do: DomainContract.Info.canonical(consumer), else: consumer
     consumer = DomainContract.Info.canonical(source)
@@ -68,22 +65,19 @@ defmodule DomainContract.Context do
       {:error, reason} -> raise ArgumentError, "invalid consumer contract: #{inspect(reason)}"
     end
 
-    index = DomainContract.Schemas.index([consumer])
-    :ok = DomainContract.SchemaStore.retain(Keyword.get(options, :holder, self()), index)
+    references = (consumer["consumes"] || []) ++ (consumer["subscriptions"] || [])
 
     compact =
       consumer
       |> Map.take(~w(format_version module version consumes subscriptions))
       |> Map.put("schema", DomainContract.Schemas.id(consumer))
 
-    :ok = DomainContract.SchemaStore.track(Keyword.get(options, :holder, self()), compact)
-
     %__MODULE__{
       consumer: compact,
       caller: caller,
       dispatch: dispatch,
       owner: consumer["module"],
-      schemas: Map.keys(index)
+      schemas: references |> Enum.map(& &1["schema"]) |> Enum.uniq()
     }
   end
 end

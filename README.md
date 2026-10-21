@@ -40,8 +40,11 @@ end
 
 Calls validate declared dependencies, operation inputs and successful outputs.
 Application errors pass through unchanged. Local calls execute the public owner's
-`call/3`. For transports, create `DomainContract.Context.new(consumer, trusted_caller,
-dispatch)` and bind it with `DomainContract.with_context(context, fn -> ... end)`.
+`call/3`. Plain local calls validate the inline captured requirements without
+registering schemas in a runtime store. A missing local dependency returns
+`{:error, {:unavailable, Module}}`. For transports, create `DomainContract.Context.new(consumer, trusted_caller,
+dispatch)` after the trusted adapter has registered the selected schema index,
+then bind it with `DomainContract.with_context(context, fn -> ... end)`.
 The dispatcher receives `(target_module, operation_string, input, original_context)`.
 `DomainContract.invoke(context, Module, operation, input)` is the explicit context
 form for captured execution contexts and runtime adapters. A platform context may
@@ -145,12 +148,28 @@ the exact checksum, source BEAM metadata and the selected graph. A version or di
 never substitutes for directional compatibility. Module/version pairs are not frozen
 across unrelated historical installations.
 
-Trusted contexts retain caller identity and compact declaration references. The
-runtime schema store retains revisions for current installations, the previous
-installation, prepared candidates and monitored live context owners. Replacing an
-installation releases completed revisions after their final holder exits. Value
-validation selects the operation and its reachable entity declarations. An expired
-context fails explicitly; it never borrows a replacement's permissions.
+Trusted contexts capture caller identity and compact declaration references. They do
+not retain schema revisions. A binding scope only sets the current process context
+and restores its predecessor on return or failure; Tasks receive contexts explicitly.
+The trusted installer registers its selected schemas with `SchemaStore.replace/2`
+before admitting calls and replaces that set after successful activation. Prepared
+metadata has its own explicit registration lifetime; UI schemas belong to the installed
+composition too. Mounted participants do not retain old revisions.
+No per-scope, worker or service lease is created. Compatibility checks cover the
+selected composition and its independently captured consumer requirements, rather
+than historical live executions. Older requirement schemas still used by an
+installed consumer remain part of that composition.
+
+Hot replacement keeps one active provider per public module. An existing scope's
+next call can reach the new compatible implementation. An already running call is
+not restarted or replayed. Captured contexts keep their original declarations and
+never acquire additional dependencies from updated code. If their required schemas
+are no longer available, invocation returns `{:error, {:invalid_contract,
+:expired_context}}`; successful continuation across arbitrary updates is not promised.
+Value validation selects the operation and its reachable entities. Runtime calls
+accept format 8 only; old metadata requires an explicit offline conversion before
+admission. Code rollback is checked against current consumers and data and never
+repeats effects automatically.
 
 ## Architecture review
 

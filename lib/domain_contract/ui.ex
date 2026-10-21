@@ -4,7 +4,9 @@ defmodule DomainContract.UI do
   Mount participants in their parent LiveView process. Delivery is local and
   ephemeral; successful dispatch acknowledges acceptance, not completed handling.
   Remove addressed participants with unmount/2 when the parent removes them.
-  All registrations disappear with the LiveView process. Iframe protocols are separate.
+  All participant registrations disappear with the LiveView process. Schema lifetime
+  belongs to the installed UI composition; mounting does not retain old revisions.
+  Iframe protocols are separate.
   """
   unless Code.ensure_loaded?(Phoenix.LiveView) do
     @compile {:no_warn_undefined, Phoenix.LiveView}
@@ -134,34 +136,17 @@ defmodule DomainContract.UI do
   @doc "Registers one active addressed participant in the current LiveView process."
   def mount(socket, module, id, kind \\ :component) when kind in [:component, :view, :context] do
     contract = Info.canonical(module)
-    holder = {self(), make_ref()}
-
-    binding =
-      Context.new(contract, module, fn _, _, _, _ -> {:error, :unbound} end, holder: holder)
-
+    binding = Context.new(contract, module, fn _, _, _, _ -> {:error, :unbound} end)
     token()
-    previous = participants()
-
-    candidate =
-      Map.put(previous, {module, id}, %{contract: binding.consumer, kind: kind, holder: holder})
-
-    try do
-      prepare_events(candidate)
-      Process.put(@participants, candidate)
-      if old = previous[{module, id}], do: SchemaStore.release(old.holder)
-      socket
-    rescue
-      error ->
-        SchemaStore.release(holder)
-        reraise error, __STACKTRACE__
-    end
+    candidate = Map.put(participants(), {module, id}, %{contract: binding.consumer, kind: kind})
+    prepare_events(candidate)
+    Process.put(@participants, candidate)
+    socket
   end
 
   def unmount(module, id) do
-    {old, retained} = Map.pop(participants(), {module, id})
-    if old, do: SchemaStore.release(old.holder)
     Process.delete({__MODULE__, :event_links})
-    Process.put(@participants, retained)
+    Process.put(@participants, Map.delete(participants(), {module, id}))
   end
 
   def dispatch_command(owner, {module, id}, name, payload) do

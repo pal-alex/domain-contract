@@ -41,6 +41,28 @@ defmodule DomainContractTest do
     def explicit(context, input), do: DomainContract.invoke(context, Echo, :echo, input)
   end
 
+  setup do
+    :ok =
+      DomainContract.SchemaStore.replace(
+        self(),
+        DomainContract.Schemas.index(
+          Enum.map(
+            [
+              Echo,
+              Client,
+              DomainContractTest.Stranger,
+              DomainContractTest.Editor,
+              DomainContractTest.Page,
+              DomainContractTest.Subscriber
+            ],
+            &Info.canonical/1
+          )
+        )
+      )
+
+    :ok
+  end
+
   test "admission validates shared definitions once and discards checks on failure" do
     owners = [Info.canonical(Echo), Info.canonical(Client)]
     mfa = {Artifact, :schema?, 1}
@@ -389,10 +411,12 @@ defmodule DomainContractTest do
   end
 
   test "commands address instances, emitters do not enumerate subscribers and cleanup removes recipients" do
+    schemas = DomainContract.SchemaStore.stats()
     DomainContract.UI.mount(%{}, Editor, "a", :context)
     DomainContract.UI.mount(%{}, Editor, "b", :context)
     DomainContract.UI.mount(%{}, Subscriber, "one", :context)
     DomainContract.UI.mount(%{}, Subscriber, "two", :context)
+    assert DomainContract.SchemaStore.stats() == schemas
 
     assert Enum.all?(Process.get({DomainContract.UI, :participants}), fn {_address, participant} ->
              is_binary(participant.contract["schema"]) and

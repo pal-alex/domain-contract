@@ -10,19 +10,20 @@ defmodule DomainContract.Runtime do
 
   def invoke(owner, target, operation, input, context) when is_atom(target) do
     with {:ok, consumer, binding} <- consumer(owner, context),
-         {:ok, reference} <- dependency(consumer, target),
-         :ok <- pin(binding),
-         :ok <- reference_input(reference, operation, input) do
+         {:ok, reference} <- declared_dependency(consumer, target),
+         {:ok, expected} <- expected_definition(consumer, reference, binding),
+         contract = DomainContract.Schemas.operation(expected, operation),
+         :ok <- input(contract, operation, input) do
       result =
         if binding do
           binding.dispatch.(target, to_string(operation), input, context)
         else
-          target.call(to_string(operation), input, context)
+          local_call(target, to_string(operation), input, context)
         end
 
       case result do
         {:ok, output} ->
-          with :ok <- reference_output(reference, operation, output), do: {:ok, output}
+          with :ok <- output(contract, operation, output), do: {:ok, output}
 
         {:error, _} = error ->
           error
@@ -35,14 +36,18 @@ defmodule DomainContract.Runtime do
 
   def invoke(_, _, _, _, _), do: {:error, {:invalid_contract, :invocation}}
 
-  defp pin(nil), do: :ok
-
-  defp pin(binding) do
-    with :ok <- DomainContract.SchemaStore.pin(self(), binding.schemas),
-         do: DomainContract.SchemaStore.track(self(), binding.consumer)
+  defp local_call(target, operation, input, context) do
+    if Code.ensure_loaded?(target) and function_exported?(target, :call, 3),
+      do: target.call(operation, input, context),
+      else: {:error, {:unavailable, target}}
   end
 
-  defp consumer(owner, nil), do: {:ok, Info.canonical(owner), nil}
+  defp consumer(owner, nil) when is_atom(owner), do: {:ok, Info.canonical(owner), nil}
+
+  defp consumer(owner, nil) do
+    with :ok <- DomainContract.Artifact.validate(owner),
+         do: {:ok, Info.canonical(owner), nil}
+  end
 
   defp consumer(owner, context) do
     with {:ok, binding} <- DomainContract.Context.fetch(context),
@@ -52,6 +57,7 @@ defmodule DomainContract.Runtime do
              if(is_atom(owner), do: Atom.to_string(owner), else: owner) do
       {:ok, binding.consumer, binding}
     else
+      {:error, _} = error -> error
       _ -> {:error, {:invalid_contract, :caller_context}}
     end
   end
@@ -59,15 +65,23 @@ defmodule DomainContract.Runtime do
   def input(source, operation, value), do: validate(source, operation, :input, value)
   def output(source, operation, value), do: validate(source, operation, :output, value)
 
-  def dependency(%{"format_version" => 7} = consumer, module),
-    do: dependency(DomainContract.Legacy.convert(consumer), module)
+  def dependency(%{"format_version" => version}, _module) when version != 8,
+    do: {:error, {:invalid_contract, :format_version}}
 
   def dependency(consumer, module) do
-    name = if is_atom(module), do: Atom.to_string(module), else: module
     consumer = canonical(consumer)
 
     if Map.has_key?(consumer, "schemas"),
       do: DomainContract.SchemaStore.retain(self(), DomainContract.Schemas.index([consumer]))
+
+    declared_dependency(consumer, module)
+  end
+
+  defp declared_dependency(%{"format_version" => version}, _module) when version != 8,
+    do: {:error, {:invalid_contract, :format_version}}
+
+  defp declared_dependency(consumer, module) do
+    name = if is_atom(module), do: Atom.to_string(module), else: module
 
     case Enum.filter(consumer["consumes"] || [], &(&1["module"] == name)) do
       [reference] -> {:ok, reference}
@@ -75,6 +89,19 @@ defmodule DomainContract.Runtime do
       _ -> {:error, {:invalid_contract, :ambiguous_contract}}
     end
   end
+
+  defp expected_definition(consumer, reference, nil), do: {:ok, definition(consumer, reference)}
+
+  defp expected_definition(_consumer, reference, _binding),
+    do: DomainContract.SchemaStore.fetch(reference["schema"])
+
+  # A compiled local owner carries its requirements inline. Bound platform
+  # consumers use schemas owned by the selected installation.
+  defp definition(%{"module" => module, "operations" => _} = consumer, %{"module" => module}),
+    do: DomainContract.Schemas.definition(consumer)
+
+  defp definition(consumer, reference),
+    do: DomainContract.Reference.definition(reference, Map.get(consumer, "schemas", %{}))
 
   def reference_input(reference, operation, value),
     do:

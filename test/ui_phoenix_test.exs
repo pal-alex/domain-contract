@@ -88,6 +88,18 @@ defmodule DomainContract.UIPhoenixTest do
     :ok
   end
 
+  setup do
+    :ok =
+      DomainContract.SchemaStore.replace(
+        self(),
+        DomainContract.Schemas.index(
+          Enum.map([Counter, Harness], &DomainContract.Info.canonical/1)
+        )
+      )
+
+    :ok
+  end
+
   test "real Phoenix lifecycle relays addressed commands and subscription-only delivery" do
     conn = Phoenix.ConnTest.build_conn() |> init_test_session(%{})
     {:ok, view, _} = live_isolated(conn, Harness)

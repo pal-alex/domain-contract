@@ -1,5 +1,5 @@
 defmodule DomainContract.SchemaStore do
-  @moduledoc "Immutable runtime schemas retained by installations, candidates and monitored context owners."
+  @moduledoc "Immutable runtime schemas owned by current installations and prepared metadata."
   use GenServer
 
   def start_link(options) do
@@ -20,10 +20,16 @@ defmodule DomainContract.SchemaStore do
 
   def release(holder), do: call({:release, holder})
   def stats, do: call(:stats)
-  def pin(holder, ids), do: call({:pin, holder, ids})
-  def track(holder, consumer), do: call({:track, holder, consumer})
-  def promises(modules, except \\ []), do: call({:promises, modules, except})
+
+  def fetch(id) when is_binary(id) do
+    case :persistent_term.get({__MODULE__, id}, :missing) do
+      :missing -> {:error, {:invalid_contract, :expired_context}}
+      schema -> {:ok, schema}
+    end
+  end
+
   def fetch!(id) when is_binary(id), do: :persistent_term.get({__MODULE__, id})
+  def available?(id), do: :persistent_term.get({__MODULE__, id}, :missing) != :missing
 
   def approved?(required, offered) when required == offered, do: true
 
@@ -34,24 +40,11 @@ defmodule DomainContract.SchemaStore do
     if approved?(required, offered) do
       :ok
     else
-      with :ok <- DomainContract.Compatibility.satisfies(fetch!(offered), fetch!(required)),
+      with {:ok, provider} <- fetch(offered),
+           {:ok, expected} <- fetch(required),
+           :ok <- DomainContract.Compatibility.satisfies(provider, expected),
            do: call({:approve, required, offered})
     end
-  end
-
-  @doc "Records admitted links, including expectations retained by older live contexts."
-  def approve_bindings(consumers, providers) do
-    :ok = retain(self(), DomainContract.Schemas.index(consumers ++ providers))
-    offered = Map.new(providers, &{&1["module"], DomainContract.Schemas.id(&1)})
-
-    for consumer <- consumers,
-        reference <- consumer["consumes"] || [],
-        id = offered[reference["module"]],
-        id do
-      :ok = approve(reference["schema"], id)
-    end
-
-    :ok
   end
 
   defp call(message) do
@@ -72,57 +65,13 @@ defmodule DomainContract.SchemaStore do
 
   @impl true
   def init(_),
-    do:
-      {:ok,
-       %{holders: %{}, monitors: %{}, ids: MapSet.new(), consumers: %{}, links: MapSet.new()}}
+    do: {:ok, %{holders: %{}, monitors: %{}, ids: MapSet.new(), links: MapSet.new()}}
 
   @impl true
   def handle_call({:approve, required, offered}, _from, state) do
-    :persistent_term.put({__MODULE__, :link, required, offered}, true)
-    {:reply, :ok, %{state | links: MapSet.put(state.links, {required, offered})}}
-  end
-
-  def handle_call({:track, holder, consumer}, _from, state) do
-    if Map.has_key?(state.holders, holder) do
-      declarations =
-        Map.get(state.consumers, holder, %{})
-        |> Map.put(DomainContract.Reference.digest(consumer), consumer)
-
-      {:reply, :ok, %{state | consumers: Map.put(state.consumers, holder, declarations)}}
-    else
-      # A newly spawned task may finish between pin and track. Its DOWN has
-      # already released the lease; do not reinsert an orphan declaration.
-      {:reply, :ok, state}
-    end
-  end
-
-  def handle_call({:promises, modules, except}, _from, state) do
-    consumers =
-      for {holder, declarations} <- state.consumers,
-          holder not in except,
-          {_id, consumer} <- declarations,
-          consumer["module"] in modules or
-            Enum.any?(
-              (consumer["consumes"] || []) ++ (consumer["subscriptions"] || []),
-              &(&1["module"] in modules)
-            ),
-          do: consumer
-
-    {:reply, Enum.uniq(consumers), state}
-  end
-
-  @impl true
-  def handle_call({:pin, holder, ids}, _from, state) do
-    if Enum.all?(ids, &MapSet.member?(state.ids, &1)) do
-      pid = if is_pid(holder), do: holder, else: elem(holder, 0)
-
-      monitors =
-        if Map.has_key?(state.monitors, pid),
-          do: state.monitors,
-          else: Map.put(state.monitors, pid, Process.monitor(pid))
-
-      ids = MapSet.union(Map.get(state.holders, holder, MapSet.new()), MapSet.new(ids))
-      {:reply, :ok, %{state | holders: Map.put(state.holders, holder, ids), monitors: monitors}}
+    if MapSet.member?(state.ids, required) and MapSet.member?(state.ids, offered) do
+      :persistent_term.put({__MODULE__, :link, required, offered}, true)
+      {:reply, :ok, %{state | links: MapSet.put(state.links, {required, offered})}}
     else
       {:reply, {:error, {:invalid_contract, :expired_context}}, state}
     end
@@ -156,8 +105,6 @@ defmodule DomainContract.SchemaStore do
     state = %{
       state
       | holders: Map.put(state.holders, holder, ids),
-        consumers:
-          if(mode == :replace, do: Map.delete(state.consumers, holder), else: state.consumers),
         monitors: monitors,
         ids: MapSet.union(state.ids, ids)
     }
@@ -166,15 +113,25 @@ defmodule DomainContract.SchemaStore do
   end
 
   def handle_call({:release, holder}, _from, state) do
-    {monitor, monitors} = Map.pop(state.monitors, holder)
-    if monitor, do: Process.demonitor(monitor, [:flush])
+    holders = Map.delete(state.holders, holder)
+    pid = if is_tuple(holder), do: elem(holder, 0), else: holder
+
+    monitors =
+      if Enum.any?(Map.keys(holders), fn retained ->
+           retained == pid or (is_tuple(retained) and elem(retained, 0) == pid)
+         end) do
+        state.monitors
+      else
+        {monitor, monitors} = Map.pop(state.monitors, pid)
+        if monitor, do: Process.demonitor(monitor, [:flush])
+        monitors
+      end
 
     {:reply, :ok,
      collect(%{
        state
-       | holders: Map.delete(state.holders, holder),
-         monitors: monitors,
-         consumers: Map.delete(state.consumers, holder)
+       | holders: holders,
+         monitors: monitors
      })}
   end
 
@@ -194,10 +151,6 @@ defmodule DomainContract.SchemaStore do
          collect(%{
            state
            | holders: holders,
-             consumers:
-               Map.reject(state.consumers, fn {holder, _} ->
-                 holder == pid or (is_tuple(holder) and elem(holder, 0) == pid)
-               end),
              monitors: Map.delete(state.monitors, pid)
          })}
 
