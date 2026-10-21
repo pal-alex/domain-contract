@@ -27,20 +27,107 @@ defmodule DomainContract.Artifact do
 
   def from_beam(_), do: {:error, :invalid_beam}
 
+  @doc "Reuses checks of exact immutable values only for the duration of this admission."
+  def with_validation(function) do
+    if Process.get({__MODULE__, :validation}) do
+      function.()
+    else
+      Process.put({__MODULE__, :validation}, %{})
+
+      try do
+        function.()
+      after
+        Process.delete({__MODULE__, :validation})
+      end
+    end
+  end
+
+  @doc """
+  Continues admission with exact declarations held by already verified prepared packages.
+
+  Trusted installation adapters use this when handing preparation to another process.
+  Never pass unchecked metadata here. Reuse is scoped to the function and keyed by
+  complete immutable values, including definitions, edges and owner digests, not IDs.
+  """
+  def with_prepared(owners, function) do
+    with_validation(fn ->
+      Enum.each(owners, &remember_prepared/1)
+      function.()
+    end)
+  end
+
+  defp remember_prepared(owner) do
+    once(:artifact, owner, fn -> true end)
+    once(:definition, DomainContract.Schemas.definition(owner), fn -> true end)
+
+    if is_binary(owner["digest"]),
+      do: once(:digest, Map.delete(owner, "digest"), fn -> owner["digest"] end)
+
+    Enum.each(Map.get(owner, "schemas", %{}), fn {id, schema} ->
+      remember_prepared(schema)
+      once(:digest, DomainContract.Schemas.definition(schema), fn -> id end)
+    end)
+  end
+
+  defp once(kind, value, function) do
+    case Process.get({__MODULE__, :validation}) do
+      nil ->
+        function.()
+
+      checked ->
+        key = {kind, value}
+
+        case Map.fetch(checked, key) do
+          {:ok, result} ->
+            result
+
+          :error ->
+            result = function.()
+
+            Process.put(
+              {__MODULE__, :validation},
+              Map.put(Process.get({__MODULE__, :validation}), key, result)
+            )
+
+            result
+        end
+    end
+  end
+
+  @doc false
+  def digest(artifact) do
+    value = Map.delete(artifact, "digest")
+
+    once(:digest, value, fn ->
+      :crypto.hash(:sha256, Info.encode(value)) |> Base.encode16(case: :lower)
+    end)
+  end
+
   def validate(source) do
-    contract = Info.canonical(source)
-    if valid?(contract), do: :ok, else: {:error, :invalid_artifact}
+    with_validation(fn ->
+      contract = Info.canonical(source)
+      if valid?(contract), do: :ok, else: {:error, :invalid_artifact}
+    end)
   rescue
     _ -> {:error, :invalid_artifact}
   end
 
   defp valid?(c) do
-    c["format_version"] == 8 and is_binary(c["module"]) and
+    once(:artifact, c, fn ->
+      definition = DomainContract.Schemas.definition(c)
+
+      once(:definition, definition, fn -> definition?(definition) end) and
+        schemas?(c) and references?(c) and
+        (not Map.has_key?(c, "digest") or c["digest"] == DomainContract.Reference.digest(c))
+    end)
+  end
+
+  defp definition?(c) do
+    c["format_version"] == 8 and not Map.has_key?(c, "schema") and is_binary(c["module"]) and
       String.starts_with?(c["module"], "Elixir.") and
       is_integer(c["version"]) and c["version"] > 0 and c["kind"] in ~w(domain ui) and
       is_binary(c["responsibility"]) and String.trim(c["responsibility"]) != "" and
-      is_map(c["metadata"]) and schema?(c) and schemas?(c) and references?(c) and
-      (not Map.has_key?(c, "digest") or c["digest"] == DomainContract.Reference.digest(c))
+      is_map(c["metadata"]) and schema?(c)
   end
 
   defp schemas?(c) do

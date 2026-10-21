@@ -128,8 +128,5 @@ defmodule DomainContract.Reference do
     owner |> DomainContract.Schemas.reference() |> Map.put("optional", optional)
   end
 
-  def digest(artifact),
-    do:
-      :crypto.hash(:sha256, Info.encode(Map.delete(artifact, "digest")))
-      |> Base.encode16(case: :lower)
+  defdelegate digest(artifact), to: Artifact
 end

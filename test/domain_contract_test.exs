@@ -41,6 +41,48 @@ defmodule DomainContractTest do
     def explicit(context, input), do: DomainContract.invoke(context, Echo, :echo, input)
   end
 
+  test "admission validates shared definitions once and discards checks on failure" do
+    owners = [Info.canonical(Echo), Info.canonical(Client)]
+    mfa = {Artifact, :schema?, 1}
+    :erlang.trace_pattern(mfa, true, [:local, :call_count])
+
+    try do
+      assert_raise RuntimeError, "abort admission", fn ->
+        Artifact.with_validation(fn ->
+          assert :ok = Compatibility.validate(owners ++ owners)
+          assert :ok = Artifact.with_validation(fn -> Compatibility.validate(owners) end)
+          assert {:call_count, 2} = :erlang.trace_info(mfa, :call_count)
+          raise "abort admission"
+        end)
+      end
+
+      assert :ok = Artifact.with_prepared(owners, fn -> Compatibility.validate(owners) end)
+      assert {:call_count, 2} = :erlang.trace_info(mfa, :call_count)
+      assert :ok = Compatibility.validate(owners)
+      assert {:call_count, 4} = :erlang.trace_info(mfa, :call_count)
+    after
+      :erlang.trace_pattern(mfa, false, [:local, :call_count])
+    end
+  end
+
+  test "verified IDs never authorize changed definitions, references or owner digests" do
+    owner = Info.canonical(Client)
+    [{id, schema}] = Enum.to_list(owner["schemas"])
+
+    Artifact.with_prepared([owner], fn ->
+      assert :ok = Artifact.validate(owner)
+      forged = put_in(owner, ["schemas", id], Map.put(schema, "operations", []))
+      assert {:error, :invalid_artifact} = Artifact.validate(forged)
+      claimed_id = put_in(forged, ["schemas", id, "schema"], id)
+      assert {:error, :invalid_artifact} = Artifact.validate(claimed_id)
+      assert {:error, :invalid_artifact} = Artifact.validate(Map.put(owner, "digest", "forged"))
+
+      bad_reference = put_in(owner, ["consumes", Access.at(0), "module"], "Elixir.Unknown")
+      assert {:error, :invalid_artifact} = Artifact.validate(Map.delete(bad_reference, "digest"))
+      assert :ok = Artifact.validate(owner)
+    end)
+  end
+
   defmodule Client.Helper do
     use DomainContract.Owned, owner: Client
     def run(input), do: DomainContract.call(Echo, :echo, input)

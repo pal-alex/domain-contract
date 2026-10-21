@@ -4,12 +4,14 @@ defmodule DomainContract.Compatibility do
   alias DomainContract.Info
 
   def validate(contracts) do
-    errors =
-      for {contract, index} <- Enum.with_index(contracts),
-          Artifact.validate(contract) != :ok,
-          do: %{contract: index, reason: :invalid_artifact}
+    Artifact.with_validation(fn ->
+      errors =
+        for {contract, index} <- Enum.with_index(contracts),
+            Artifact.validate(contract) != :ok,
+            do: %{contract: index, reason: :invalid_artifact}
 
-    result(errors)
+      result(errors)
+    end)
   end
 
   def check(candidates, authorities \\ []) do
