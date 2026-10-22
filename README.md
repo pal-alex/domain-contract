@@ -168,7 +168,17 @@ not restarted or replayed. Captured contexts keep their original declarations an
 never acquire additional dependencies from updated code. If their required schemas
 are no longer available, invocation returns `{:error, {:invalid_contract,
 :expired_context}}`; successful continuation across arbitrary updates is not promised.
-Value validation selects the operation and its reachable entities. Runtime calls
+Each invocation selects its dependency, operation and entity index once for both
+input and output. `__contract_entry__/0` captures the schema and local `call/3`
+from one code generation, preventing a concurrent update from redirecting checked
+input to incompatible code. Runtime checks an already admitted schema pair; it
+does not repeat structural comparison. Trusted installations approve compatible
+pairs with `SchemaStore.approve/2`. Exact same-schema plain calls need no store.
+`Context` contains consumer, trusted caller and required schema references only.
+Platform execution IDs, authorization grants and storage belong to the embedding
+context. `Info.declaration/3` creates trusted synthetic declarations;
+`Info.binding/1` projects canonical requirements. Already validated adapters may
+use `Context.captured/2`; none of these operations retain schemas. Runtime calls
 accept format 8 only; old metadata requires an explicit offline conversion before
 admission. Code rollback is checked against current consumers and data and never
 repeats effects automatically.
@@ -202,3 +212,8 @@ behavioral tests. Boundary continues to enforce configured implementation bounda
 Run `mix verify` for formatting, compilation with warnings as errors and all tests.
 
 Format transition and coordinated runtime rollout: [format 8 deployment](docs/format-8-deployment.txt).
+
+Version 1.1 adds the executable `__contract_entry__/0` protocol. Recompile ordinary
+providers and consumers together when upgrading from 1.0; structural metadata
+remains format 8 and unchanged interfaces retain their schema IDs. Implementation
+checks reject an old executable without the paired schema/callback entry.

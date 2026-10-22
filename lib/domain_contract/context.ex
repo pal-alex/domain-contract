@@ -11,7 +11,7 @@ defmodule DomainContract.Context do
   and durable execution remain responsibilities of the adapter.
   """
   @enforce_keys [:consumer, :caller]
-  defstruct [:consumer, :caller, :owner, :scope, :execution_id, :grants, schemas: []]
+  defstruct [:consumer, :caller, schemas: []]
 
   @type t :: %__MODULE__{
           consumer: module() | map(),
@@ -49,8 +49,7 @@ defmodule DomainContract.Context do
 
   @doc "Captures a validated consumer without retaining schemas. The trusted installer owns their lifetime."
   def new(consumer, caller) when not is_nil(caller) do
-    source = if is_atom(consumer), do: DomainContract.Info.canonical(consumer), else: consumer
-    consumer = DomainContract.Info.canonical(source)
+    consumer = DomainContract.Info.canonical(consumer)
 
     consumer =
       if Map.has_key?(consumer, "schema"),
@@ -62,18 +61,31 @@ defmodule DomainContract.Context do
       {:error, reason} -> raise ArgumentError, "invalid consumer contract: #{inspect(reason)}"
     end
 
-    references = (consumer["consumes"] || []) ++ (consumer["subscriptions"] || [])
+    captured(DomainContract.Info.binding(consumer), caller)
+  end
 
-    compact =
-      consumer
-      |> Map.take(~w(format_version module version consumes subscriptions))
-      |> Map.put("schema", DomainContract.Schemas.id(consumer))
+  @doc "Creates a trusted boundary consumer for a selected entry, without deriving nested rights."
+  def for_entry(reference, caller) do
+    captured(
+      %{
+        "format_version" => 8,
+        "module" => "Elixir.DomainContract.Context",
+        "version" => 1,
+        "consumes" => [Map.put(reference, "optional", false)]
+      },
+      caller
+    )
+  end
 
+  @doc "Binds already checked compact requirements without rebuilding or retaining schemas."
+  def captured(consumer, caller) when is_map(consumer) and not is_nil(caller) do
     %__MODULE__{
-      consumer: compact,
+      consumer: consumer,
       caller: caller,
-      owner: consumer["module"],
-      schemas: references |> Enum.map(& &1["schema"]) |> Enum.uniq()
+      schemas:
+        ((consumer["consumes"] || []) ++ (consumer["subscriptions"] || []))
+        |> Enum.map(& &1["schema"])
+        |> Enum.uniq()
     }
   end
 end

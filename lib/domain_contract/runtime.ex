@@ -12,13 +12,15 @@ defmodule DomainContract.Runtime do
     with {:ok, consumer, binding} <- consumer(owner, context),
          {:ok, reference} <- declared_dependency(consumer, target),
          {:ok, expected} <- expected_definition(consumer, reference, binding),
-         contract = DomainContract.Schemas.operation(expected, operation),
-         :ok <- input(contract, operation, input) do
-      result = local_call(target, to_string(operation), input, context)
+         {:ok, declaration} <- operation(expected, operation),
+         entities = Map.new(expected["entities"], &{&1["name"], &1}),
+         :ok <- value(declaration, :input, input, entities),
+         {:ok, call} <- entry(target, reference) do
+      result = call.(to_string(operation), input, context)
 
       case result do
         {:ok, output} ->
-          with :ok <- output(contract, operation, output), do: {:ok, output}
+          with :ok <- value(declaration, :output, output, entities), do: {:ok, output}
 
         {:error, _} = error ->
           error
@@ -31,10 +33,18 @@ defmodule DomainContract.Runtime do
 
   def invoke(_, _, _, _, _), do: {:error, {:invalid_contract, :invocation}}
 
-  defp local_call(target, operation, input, context) do
-    if Code.ensure_loaded?(target) and function_exported?(target, :call, 3),
-      do: target.call(operation, input, context),
-      else: {:error, {:unavailable, target}}
+  # The local capture and schema come from one code generation. A concurrent
+  # replacement cannot redirect this call to unchecked new code.
+  defp entry(target, reference) do
+    if Code.ensure_loaded?(target) and function_exported?(target, :__contract_entry__, 0) do
+      {schema, call} = target.__contract_entry__()
+
+      if DomainContract.SchemaStore.approved?(reference["schema"], schema),
+        do: {:ok, call},
+        else: {:error, {:invalid_contract, :provider_mismatch}}
+    else
+      {:error, {:unavailable, target}}
+    end
   end
 
   defp consumer(owner, nil) when is_atom(owner), do: {:ok, Info.canonical(owner), nil}
@@ -48,8 +58,9 @@ defmodule DomainContract.Runtime do
     with {:ok, binding} <- DomainContract.Context.fetch(context),
          true <- not is_nil(binding.caller),
          true <-
-           binding.consumer["module"] ==
-             if(is_atom(owner), do: Atom.to_string(owner), else: owner) do
+           owner == :context or
+             binding.consumer["module"] ==
+               if(is_atom(owner), do: Atom.to_string(owner), else: owner) do
       {:ok, binding.consumer, binding}
     else
       {:error, _} = error -> error
@@ -96,22 +107,10 @@ defmodule DomainContract.Runtime do
     do: DomainContract.Reference.definition(reference, Map.get(consumer, "schemas", %{}))
 
   def reference_input(reference, operation, value),
-    do:
-      input(
-        DomainContract.Reference.definition(reference)
-        |> DomainContract.Schemas.operation(operation),
-        operation,
-        value
-      )
+    do: input(DomainContract.Reference.definition(reference), operation, value)
 
   def reference_output(reference, operation, value),
-    do:
-      output(
-        DomainContract.Reference.definition(reference)
-        |> DomainContract.Schemas.operation(operation),
-        operation,
-        value
-      )
+    do: output(DomainContract.Reference.definition(reference), operation, value)
 
   def validate_type(type, value, entities \\ [], path \\ []),
     do:
@@ -131,25 +130,26 @@ defmodule DomainContract.Runtime do
 
   defp validate(source, operation, direction, value) do
     contract = canonical(source)
-    operation = to_string(operation)
 
-    case Enum.find(contract["operations"], &(&1["name"] == operation)) do
-      nil ->
-        {:error, {:invalid_contract, :invalid_operation}}
+    with {:ok, declaration} <- operation(contract, operation),
+         do:
+           value(declaration, direction, value, Map.new(contract["entities"], &{&1["name"], &1}))
+  end
 
-      declaration ->
-        if direction == :output and declaration["optional_output"] and is_nil(value) do
-          :ok
-        else
-          type =
-            declaration[to_string(direction) <> "_type"] ||
-              ["entity", declaration[to_string(direction)]]
+  defp operation(contract, name) do
+    case Enum.find(contract["operations"], &(&1["name"] == to_string(name))) do
+      nil -> {:error, {:invalid_contract, :invalid_operation}}
+      declaration -> {:ok, declaration}
+    end
+  end
 
-          check(type, value, Map.new(contract["entities"], &{&1["name"], &1}), [
-            operation,
-            direction
-          ])
-        end
+  defp value(declaration, direction, value, entities) do
+    if direction == :output and declaration["optional_output"] and is_nil(value) do
+      :ok
+    else
+      key = to_string(direction)
+      type = declaration[key <> "_type"] || ["entity", declaration[key]]
+      check(type, value, entities, [declaration["name"], direction])
     end
   end
 

@@ -10,14 +10,14 @@ defmodule DomainContract.Info do
     owner
     |> Map.from_struct()
     |> Map.drop([:__spark_metadata__])
-    |> Map.update!(:module, &Atom.to_string/1)
+    |> Map.update!(:module, &to_string/1)
     |> Map.update!(:operations, &named/1)
     |> Map.update!(:entities, &named/1)
     |> Map.update!(:consumes, fn refs ->
       refs
       |> Enum.map(fn ref ->
         %{
-          module: Atom.to_string(ref.module),
+          module: to_string(ref.module),
           optional: ref.optional,
           schema: DomainContract.Schemas.id(ref.definition)
         }
@@ -28,7 +28,7 @@ defmodule DomainContract.Info do
       refs
       |> Enum.map(fn ref ->
         %{
-          module: Atom.to_string(ref.module),
+          module: to_string(ref.module),
           name: ref.name,
           schema: DomainContract.Schemas.id(ref.definition)
         }
@@ -101,4 +101,45 @@ defmodule DomainContract.Info do
     do: Atom.to_string(atom)
 
   defp ordered(value), do: value
+  @doc "Compact immutable invocation requirements, without the provider schema graph."
+  def binding(owner) do
+    owner = canonical(owner)
+
+    owner
+    |> Map.take(~w(format_version module version consumes subscriptions))
+    |> Map.put("schema", DomainContract.Schemas.id(owner))
+  end
+
+  @spec declaration(String.t(), [map()]) :: map()
+  def declaration(module, references, schemas \\ %{}) do
+    consumes =
+      for reference <- merge_references(references) do
+        %{
+          module: reference["module"],
+          optional: reference["optional"],
+          definition: DomainContract.Reference.definition(reference, schemas)
+        }
+      end
+
+    contract(%DomainContract.Domain{
+      module: module,
+      version: 1,
+      responsibility: "Runtime-owned trusted invocation binding for checked owner requirements.",
+      consumes: consumes
+    })
+  end
+
+  defp merge_references(references) do
+    references
+    |> Enum.group_by(& &1["module"])
+    |> Enum.map(fn {module, refs} ->
+      definitions = Enum.uniq_by(refs, & &1["schema"])
+
+      if length(definitions) != 1,
+        do: raise(ArgumentError, "conflicting retained requirements for #{module}")
+
+      Map.put(hd(refs), "optional", Enum.all?(refs, & &1["optional"]))
+    end)
+    |> Enum.sort_by(& &1["module"])
+  end
 end

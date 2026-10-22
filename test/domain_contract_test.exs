@@ -306,6 +306,50 @@ defmodule DomainContractTest do
     end
   end
 
+  test "a captured entry keeps its code generation across replacement and never derives new rights" do
+    name = Module.concat(__MODULE__, "Replacement#{System.unique_integer([:positive])}")
+
+    compile = fn output, value ->
+      Code.compile_string("""
+      defmodule #{inspect(name)} do
+        use DomainContract
+        contract do
+          version(1)
+          responsibility("Replacement race fixture")
+          operation(:echo, input_type: :string, output_type: #{output})
+        end
+        def call("echo", _, _), do: {:ok, #{value}}
+      end
+      """)
+    end
+
+    previous = Code.compiler_options(ignore_module_conflict: true)
+
+    try do
+      compile.(":string", "\"old\"")
+      old = Info.canonical(name)
+      binding = Context.for_entry(DomainContract.Schemas.reference(old), :trusted)
+      :ok = DomainContract.SchemaStore.retain(self(), DomainContract.Schemas.index([old]))
+      {schema, pinned} = name.__contract_entry__()
+      compile.(":integer", "42")
+      replacement = Info.canonical(name)
+      :ok = DomainContract.SchemaStore.retain(self(), DomainContract.Schemas.index([replacement]))
+
+      assert schema == DomainContract.Schemas.id(old)
+      assert pinned.("echo", "input", binding) == {:ok, "old"}
+
+      assert {:error, {:invalid_contract, :provider_mismatch}} =
+               DomainContract.invoke(binding, name, "echo", "input")
+
+      refute DomainContract.SchemaStore.approved?(schema, DomainContract.Schemas.id(replacement))
+    after
+      Code.compiler_options(previous)
+      :code.purge(name)
+      :code.delete(name)
+      :code.purge(name)
+    end
+  end
+
   test "omitted, nullable, alternatives and closed fields remain distinct" do
     assert :ok = Runtime.input(Echo, :echo, %{text: "x"})
     assert :ok = Runtime.input(Echo, :echo, %{text: "x", nullable: nil})

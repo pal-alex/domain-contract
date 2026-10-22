@@ -93,7 +93,26 @@ defmodule DomainContract.Compiler do
 
     artifact = Map.put(artifact, "digest", DomainContract.Reference.digest(artifact))
 
+    adapter = Module.get_attribute(env.module, :domain_contract_entry)
+
+    platform =
+      case adapter do
+        nil -> nil
+        {module, options} -> module.compile(env, artifact, options)
+        module -> module.compile(env, artifact, [])
+      end
+
+    entry =
+      if operations != [] do
+        quote do
+          @doc false
+          def __contract_entry__, do: {unquote(DomainContract.Schemas.id(artifact)), &call/3}
+        end
+      end
+
     quote do
+      unquote(platform)
+      unquote(entry)
       Module.register_attribute(__MODULE__, :domain_contract_artifact, persist: true)
       Module.register_attribute(__MODULE__, :domain_contract_implementation, persist: true)
       @domain_contract_artifact unquote(Macro.escape(artifact))

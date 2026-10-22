@@ -44,11 +44,22 @@ defmodule DomainContract do
   use Spark.Dsl, default_extensions: [extensions: [DomainContract.Dsl]]
 
   defmacro __using__(options) do
+    {entry, options} = Keyword.pop(options, :entry)
     code = super(options)
 
+    entry_module =
+      case entry do
+        {module, options} when is_list(options) -> module
+        module -> module
+      end
+
+    dependency = if entry_module, do: quote(do: require(unquote(entry_module)))
+
     quote do
+      unquote(dependency)
       DomainContract.Compiler.capture_boundary(__MODULE__)
       unquote(code)
+      @domain_contract_entry unquote(entry)
       @domain_contract_spark_options @opts
       DomainContract.Compiler.isolate_callbacks(__MODULE__)
     end
@@ -85,9 +96,7 @@ defmodule DomainContract do
 
   @doc "Explicit trusted-context form for runtimes with captured execution contexts."
   def invoke(context, target, operation, input) do
-    with {:ok, binding} <- DomainContract.Context.fetch(context) do
-      DomainContract.Runtime.invoke(binding.consumer["module"], target, operation, input, context)
-    end
+    DomainContract.Runtime.invoke(:context, target, operation, input, context)
   end
 
   @doc "Binds a trusted context for this process and restores the previous binding, including on errors."

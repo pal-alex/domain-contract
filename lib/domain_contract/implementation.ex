@@ -137,9 +137,11 @@ defmodule DomainContract.Implementation do
       expected =
         if is_nil(expected), do: actual, else: Enum.map(List.wrap(expected), &Info.canonical/1)
 
-      if operations(actual) == [] or function_exported?(module, :call, 3),
-        do: check_metadata(actual, module.__domain_contract_operations__(), expected),
-        else: {:error, {:invalid_contract, :invalid_implementation}}
+      if operations(actual) == [] or
+           (function_exported?(module, :call, 3) and
+              function_exported?(module, :__contract_entry__, 0)),
+         do: check_metadata(actual, module.__domain_contract_operations__(), expected),
+         else: {:error, {:invalid_contract, :invalid_implementation}}
     else
       _ -> {:error, {:invalid_contract, :invalid_implementation}}
     end
@@ -161,9 +163,10 @@ defmodule DomainContract.Implementation do
       actual = [artifact]
       expected = Enum.map(List.wrap(expected), &Info.canonical/1)
 
-      if operations(actual) == [] or {:call, 3} in exports,
-        do: check_metadata(actual, covered, expected),
-        else: {:error, {:invalid_contract, :invalid_implementation}}
+      if operations(actual) == [] or
+           ({:call, 3} in exports and {:__contract_entry__, 0} in exports),
+         do: check_metadata(actual, covered, expected),
+         else: {:error, {:invalid_contract, :invalid_implementation}}
     else
       _ -> {:error, {:invalid_contract, :invalid_implementation}}
     end
