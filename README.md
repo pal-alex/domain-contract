@@ -42,10 +42,12 @@ Calls validate declared dependencies, operation inputs and successful outputs.
 Application errors pass through unchanged. Local calls execute the public owner's
 `call/3`. Plain local calls validate the inline captured requirements without
 registering schemas in a runtime store. A missing local dependency returns
-`{:error, {:unavailable, Module}}`. For transports, create `DomainContract.Context.new(consumer, trusted_caller,
-dispatch)` after the trusted adapter has registered the selected schema index,
-then bind it with `DomainContract.with_context(context, fn -> ... end)`.
-The dispatcher receives `(target_module, operation_string, input, original_context)`.
+`{:error, {:unavailable, Module}}`. A trusted platform creates
+`DomainContract.Context.new(consumer, trusted_caller)` after registering the
+selected schema index, then binds it with
+`DomainContract.with_context(context, fn -> ... end)`. Calls always enter the
+installed public module's `call/3`; a platform packager may install a transport
+adapter with the same public name. DomainContract does not select transports.
 `DomainContract.invoke(context, Module, operation, input)` is the explicit context
 form for captured execution contexts and runtime adapters. A platform context may
 embed the binding in its `:domain_contract` field; the complete platform value,
