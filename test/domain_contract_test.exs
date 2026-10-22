@@ -116,6 +116,32 @@ defmodule DomainContractTest do
     def run(input), do: DomainContract.call(Echo, :echo, input)
   end
 
+  test "Owned helpers validate the compiled owner's requirements when external inputs contain declarations only" do
+    path = Path.join(System.tmp_dir!(), "owned-input-#{System.unique_integer([:positive])}.json")
+
+    declarations =
+      [DomainContract.Schemas.definition(Info.canonical(Client))]
+      |> DomainContract.Schemas.bundle()
+
+    File.write!(path, Info.encode(declarations))
+    previous = Application.get_env(:domain_contract, :metadata_paths, [])
+    Application.put_env(:domain_contract, :metadata_paths, [path])
+
+    try do
+      Code.compile_string("""
+      defmodule DomainContractTest.DeclarationInputHelper do
+        use DomainContract.Owned, owner: DomainContractTest.Client
+        def run(input), do: DomainContract.call(DomainContractTest.Echo, :echo, input)
+      end
+      """)
+
+      assert function_exported?(DomainContractTest.DeclarationInputHelper, :run, 1)
+    after
+      Application.put_env(:domain_contract, :metadata_paths, previous)
+      File.rm!(path)
+    end
+  end
+
   defmodule Stranger do
     use DomainContract
 

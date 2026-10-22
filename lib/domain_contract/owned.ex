@@ -65,7 +65,8 @@ defmodule DomainContract.Owned do
 
   defmacro __before_compile__(env) do
     owner = owner(env)
-    validate(env, DomainContract.Reference.resolve(owner))
+    Code.ensure_compiled!(owner)
+    validate(env, DomainContract.Info.canonical(owner))
 
     quote do
       Module.register_attribute(__MODULE__, :domain_contract_owner_metadata, persist: true)
