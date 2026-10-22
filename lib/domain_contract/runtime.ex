@@ -14,12 +14,7 @@ defmodule DomainContract.Runtime do
          {:ok, expected} <- expected_definition(consumer, reference, binding),
          contract = DomainContract.Schemas.operation(expected, operation),
          :ok <- input(contract, operation, input) do
-      result =
-        if binding do
-          binding.dispatch.(target, to_string(operation), input, context)
-        else
-          local_call(target, to_string(operation), input, context)
-        end
+      result = local_call(target, to_string(operation), input, context)
 
       case result do
         {:ok, output} ->
@@ -51,7 +46,7 @@ defmodule DomainContract.Runtime do
 
   defp consumer(owner, context) do
     with {:ok, binding} <- DomainContract.Context.fetch(context),
-         true <- not is_nil(binding.caller) and is_function(binding.dispatch, 4),
+         true <- not is_nil(binding.caller),
          true <-
            binding.consumer["module"] ==
              if(is_atom(owner), do: Atom.to_string(owner), else: owner) do
@@ -70,9 +65,6 @@ defmodule DomainContract.Runtime do
 
   def dependency(consumer, module) do
     consumer = canonical(consumer)
-
-    if Map.has_key?(consumer, "schemas"),
-      do: DomainContract.SchemaStore.retain(self(), DomainContract.Schemas.index([consumer]))
 
     declared_dependency(consumer, module)
   end

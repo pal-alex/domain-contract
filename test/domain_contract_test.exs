@@ -25,7 +25,13 @@ defmodule DomainContractTest do
       end
     end
 
-    def call("echo", input, _context), do: {:ok, input[:text] || input["text"]}
+    def call("echo", input, context) do
+      case context do
+        %{result: result} -> result
+        %{source: %{user: 7, execution: "kept"}} -> {:ok, input.text <> " adapted"}
+        _ -> {:ok, input[:text] || input["text"]}
+      end
+    end
   end
 
   defmodule Client do
@@ -121,7 +127,7 @@ defmodule DomainContractTest do
     def run,
       do:
         DomainContract.invoke(
-          Context.new(__MODULE__, :trusted, fn _, _, _, _ -> {:ok, "no"} end),
+          Context.new(__MODULE__, :trusted),
           Echo,
           :echo,
           %{text: "no"}
@@ -216,15 +222,14 @@ defmodule DomainContractTest do
   end
 
   test "context validation cache cannot reuse changed or invalid consumer metadata" do
-    dispatch = fn _, _, _, _ -> {:error, :unused} end
     owner = Info.canonical(Client)
-    first = Context.new(owner, "first", dispatch)
-    second = Context.new(owner, "second", dispatch)
+    first = Context.new(owner, "first")
+    second = Context.new(owner, "second")
     assert first.consumer == second.consumer
     assert second.caller == "second"
 
     assert_raise ArgumentError, fn ->
-      Context.new(Map.put(owner, "consumes", []), "forged", dispatch)
+      Context.new(Map.put(owner, "consumes", []), "forged")
     end
 
     module = Module.concat(__MODULE__, "CachedOwner#{System.unique_integer([:positive])}")
@@ -237,7 +242,7 @@ defmodule DomainContractTest do
         "defmodule #{inspect(module)} do use DomainContract; contract do version #{version}; responsibility \"Owns cached context validation.\" end end"
       )
 
-      assert Context.new(module, "caller", dispatch).consumer["version"] == version
+      assert Context.new(module, "caller").consumer["version"] == version
     end
 
     :code.purge(module)
@@ -264,13 +269,8 @@ defmodule DomainContractTest do
   end
 
   test "scoped runtime and explicit contexts preserve trusted state and restore binding" do
-    dispatch = fn Echo, "echo", input, context ->
-      assert context.source == %{user: 7, execution: "kept"}
-      {:ok, input.text <> " adapted"}
-    end
-
     context = %{
-      domain_contract: Context.new(Client, "trusted-plugin", dispatch),
+      domain_contract: Context.new(Client, "trusted-plugin"),
       source: %{user: 7, execution: "kept"}
     }
 
@@ -297,7 +297,7 @@ defmodule DomainContractTest do
           {{:error, :unavailable}, {:error, :unavailable}},
           {:bad, :invalid}
         ] do
-      context = Context.new(Client, :trusted, fn _, _, _, _ -> result end)
+      context = %{domain_contract: Context.new(Client, :trusted), result: result}
       actual = Client.explicit(context, %{text: "hi"})
 
       if expected == :invalid,

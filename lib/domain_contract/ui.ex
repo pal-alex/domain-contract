@@ -136,7 +136,7 @@ defmodule DomainContract.UI do
   @doc "Registers one active addressed participant in the current LiveView process."
   def mount(socket, module, id, kind \\ :component) when kind in [:component, :view, :context] do
     contract = Info.canonical(module)
-    binding = Context.new(contract, module, fn _, _, _, _ -> {:error, :unbound} end)
+    binding = Context.new(contract, module)
     token()
     candidate = Map.put(participants(), {module, id}, %{contract: binding.consumer, kind: kind})
     prepare_events(candidate)

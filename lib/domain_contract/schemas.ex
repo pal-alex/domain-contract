@@ -59,7 +59,9 @@ defmodule DomainContract.Schemas do
       "format_version" => 8,
       "contracts" =>
         Enum.map(owners, fn owner ->
-          owner |> Map.take(~w(module consumes subscriptions)) |> Map.put("schema", id(owner))
+          owner
+          |> Map.take(~w(module consumes subscriptions digest))
+          |> Map.put("schema", id(owner))
         end),
       "schemas" => index(owners)
     }
@@ -102,9 +104,15 @@ defmodule DomainContract.Schemas do
 
   def unpack(payload), do: payload
 
+  @doc "Restores a payload held by a trusted preparation or current installation, without revalidating its immutable index."
+  def unpack_prepared(%{"contract_schemas" => schemas} = payload),
+    do: payload |> Map.delete("contract_schemas") |> restore_value(schemas)
+
+  def unpack_prepared(payload), do: payload
+
   defp pack_value(%{"format_version" => 8, "operations" => _, "module" => _} = owner, schemas),
     do:
-      {Map.take(owner, ~w(module consumes subscriptions)) |> Map.put("schema", id(owner)),
+      {Map.take(owner, ~w(module consumes subscriptions digest)) |> Map.put("schema", id(owner)),
        merge(schemas, index([owner]))}
 
   defp pack_value(map, schemas) when is_map(map) do
@@ -132,6 +140,25 @@ defmodule DomainContract.Schemas do
     do: Enum.map(list, &unpack_value(&1, schemas))
 
   defp unpack_value(value, _schemas), do: value
+
+  defp restore_value(%{"schema" => own_id, "module" => module} = owner, schemas) do
+    definition = Map.fetch!(schemas, own_id)
+    if definition["module"] != module, do: raise(ArgumentError, "prepared schema owner mismatch")
+    refs = (owner["consumes"] || []) ++ (owner["subscriptions"] || [])
+    required = refs |> Enum.map(& &1["schema"]) |> Enum.reject(&(&1 == own_id))
+
+    definition
+    |> Map.merge(Map.take(owner, ~w(consumes subscriptions digest)))
+    |> Map.put("schemas", Map.take(schemas, required))
+  end
+
+  defp restore_value(map, schemas) when is_map(map),
+    do: Map.new(map, fn {key, value} -> {key, restore_value(value, schemas)} end)
+
+  defp restore_value(list, schemas) when is_list(list),
+    do: Enum.map(list, &restore_value(&1, schemas))
+
+  defp restore_value(value, _schemas), do: value
 
   def expand(%{"schema" => _} = consumer) do
     owner = fetch!(consumer)
@@ -163,6 +190,9 @@ defmodule DomainContract.Schemas do
         }
     end
   end
+
+  @doc "Selects the entity graph reachable from a DomainContract type."
+  def type_entities(type, entities), do: reachable(entities, referenced(type), MapSet.new())
 
   defp reachable(entities, names, seen) do
     wanted = MapSet.difference(names, seen)

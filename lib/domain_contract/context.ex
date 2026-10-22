@@ -3,21 +3,19 @@ defmodule DomainContract.Context do
   An invocation binding supplied by a trusted runtime adapter.
 
   `consumer` is a declaration module or immutable canonical export. `caller` is the
-  runtime's trusted identity. `dispatch` receives `(name, operation, input, context)`;
-  the last argument is the original context, including adapter-owned state.
+  runtime's trusted identity. The installed public module owns execution.
   A platform context may embed this struct in its `:domain_contract` field.
 
   This binding is not an authentication mechanism. Never construct it from request
-  parameters. Provider selection, availability, authorization, transport, storage
+  parameters. Availability, authorization, transport, storage
   and durable execution remain responsibilities of the adapter.
   """
-  @enforce_keys [:consumer, :caller, :dispatch]
-  defstruct [:consumer, :caller, :dispatch, :owner, :scope, :execution_id, schemas: []]
+  @enforce_keys [:consumer, :caller]
+  defstruct [:consumer, :caller, :owner, :scope, :execution_id, :grants, schemas: []]
 
   @type t :: %__MODULE__{
           consumer: module() | map(),
-          caller: term(),
-          dispatch: (module(), String.t(), term(), term() -> {:ok, term()} | {:error, term()})
+          caller: term()
         }
 
   @key {__MODULE__, :binding}
@@ -50,8 +48,7 @@ defmodule DomainContract.Context do
   def fetch(_), do: {:error, {:invalid_contract, :context}}
 
   @doc "Captures a validated consumer without retaining schemas. The trusted installer owns their lifetime."
-  def new(consumer, caller, dispatch)
-      when not is_nil(caller) and is_function(dispatch, 4) do
+  def new(consumer, caller) when not is_nil(caller) do
     source = if is_atom(consumer), do: DomainContract.Info.canonical(consumer), else: consumer
     consumer = DomainContract.Info.canonical(source)
 
@@ -75,7 +72,6 @@ defmodule DomainContract.Context do
     %__MODULE__{
       consumer: compact,
       caller: caller,
-      dispatch: dispatch,
       owner: consumer["module"],
       schemas: references |> Enum.map(& &1["schema"]) |> Enum.uniq()
     }

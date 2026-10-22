@@ -108,7 +108,7 @@ defmodule DomainContract.SchemaLifecycleTest do
       assert Enum.all?(refs, &(&1["schema"] == shared and not Map.has_key?(&1, "definition")))
       assert Enum.all?(Schemas.unbundle(bundle), &(Artifact.validate(&1) == :ok))
       :ok = SchemaStore.retain(self(), Schemas.index(consumers))
-      contexts = Enum.map(consumers, &Context.new(&1, :trusted, fn _, _, _, _ -> {:ok, "ok"} end))
+      contexts = Enum.map(consumers, &Context.new(&1, :trusted))
       assert Enum.all?(contexts, &(:erlang.external_size(&1) < 1500))
       assert :ok = DomainContract.Runtime.reference_input(hd(refs), :echo, %{description: "kept"})
       assert {:error, _} = DomainContract.Runtime.reference_input(hd(refs), :echo, %{})
@@ -142,7 +142,7 @@ defmodule DomainContract.SchemaLifecycleTest do
   test "an obsolete context cannot veto a new selected composition" do
     owner = Info.canonical(Owner)
     caller = Info.canonical(Consumer)
-    binding = Context.new(caller, :trusted, fn _, _, _, _ -> flunk("expired dispatch") end)
+    binding = Context.new(caller, :trusted)
 
     changed =
       caller
@@ -179,7 +179,7 @@ defmodule DomainContract.SchemaLifecycleTest do
     :ok = SchemaStore.replace(self(), Schemas.index([owner, caller]))
 
     binding =
-      Context.new(caller, :trusted, fn target, op, input, ctx -> target.call(op, input, ctx) end)
+      Context.new(caller, :trusted)
 
     try do
       Context.bind(binding, fn ->
@@ -208,7 +208,7 @@ defmodule DomainContract.SchemaLifecycleTest do
   test "updating a consumer does not widen an older context's declared dependencies" do
     owner = Info.canonical(Owner)
     caller = Info.canonical(Consumer)
-    binding = Context.new(caller, :trusted, fn _, _, _, _ -> flunk("undeclared dispatch") end)
+    binding = Context.new(caller, :trusted)
     other = SelfConsumer |> Info.canonical() |> Map.delete("digest") |> Map.put("consumes", [])
 
     updated =
@@ -241,8 +241,8 @@ defmodule DomainContract.SchemaLifecycleTest do
   end
 
   test "nested scopes only bind contexts and restore the parent after exceptions" do
-    outer = Context.new(Consumer, :outer, fn _, _, _, _ -> {:ok, "outer"} end)
-    inner = Context.new(Consumer, :inner, fn _, _, _, _ -> {:ok, "inner"} end)
+    outer = Context.new(Consumer, :outer)
+    inner = Context.new(Consumer, :inner)
     baseline = SchemaStore.stats()
 
     Context.bind(outer, fn ->
@@ -281,7 +281,7 @@ defmodule DomainContract.SchemaLifecycleTest do
   end
 
   test "a task uses a captured context without registering a lease" do
-    binding = Context.new(Consumer, :trusted, fn _, _, _, _ -> {:ok, "ok"} end)
+    binding = Context.new(Consumer, :trusted)
     baseline = SchemaStore.stats()
 
     task =
@@ -295,7 +295,7 @@ defmodule DomainContract.SchemaLifecycleTest do
   end
 
   test "runtime bindings reject old metadata instead of converting it into current rights" do
-    binding = Context.new(Consumer, :trusted, fn _, _, _, _ -> flunk("legacy dispatch") end)
+    binding = Context.new(Consumer, :trusted)
     legacy = %{binding | consumer: Map.put(binding.consumer, "format_version", 7)}
     assert {:error, {:invalid_contract, :format_version}} = Context.fetch(legacy)
 
@@ -307,7 +307,7 @@ defmodule DomainContract.SchemaLifecycleTest do
   end
 
   test "invocation uses installation schemas without registering or hashing on each call" do
-    binding = Context.new(Consumer, :trusted, fn _, _, _, _ -> {:ok, "ok"} end)
+    binding = Context.new(Consumer, :trusted)
     tracked = [{SchemaStore, :retain, 2}, {SchemaStore, :replace, 2}, {Reference, :digest, 1}]
     Enum.each(tracked, &:erlang.trace_pattern(&1, true, [:local, :call_count]))
 
@@ -326,7 +326,7 @@ defmodule DomainContract.SchemaLifecycleTest do
     baseline = SchemaStore.stats()
     owner = Info.canonical(Consumer) |> Map.delete("digest") |> Map.put("version", 101)
     :ok = SchemaStore.replace(self(), Schemas.index([owner]))
-    binding = Context.new(owner, :trusted, fn _, _, _, _ -> flunk("expired dispatch") end)
+    binding = Context.new(owner, :trusted)
 
     Context.bind(binding, fn ->
       :ok = SchemaStore.release(self())
@@ -399,7 +399,7 @@ defmodule DomainContract.SchemaLifecycleTest do
     for revision <- 101..120 do
       owner = base |> Map.delete("digest") |> Map.put("version", revision)
       :ok = SchemaStore.replace(current, Schemas.index([owner]))
-      Context.new(owner, :trusted, fn _, _, _, _ -> {:ok, "ok"} end)
+      Context.new(owner, :trusted)
       assert SchemaStore.stats().definitions <= baseline.definitions + 1
       assert SchemaStore.stats().holders == baseline.holders + 1
     end
