@@ -39,9 +39,10 @@ defmodule DomainContract.Info do
     |> Map.update!(:notifications, &named/1)
     |> Map.put(
       :schemas,
-      DomainContract.Schemas.index(
-        Enum.map(owner.consumes ++ owner.subscriptions, & &1.definition)
-      )
+      Map.new(owner.consumes ++ owner.subscriptions, fn reference ->
+        {DomainContract.Schemas.id(reference.definition),
+         DomainContract.Schemas.definition(reference.definition)}
+      end)
     )
     |> Map.put(:format_version, 8)
     |> canonical()

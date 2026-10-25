@@ -32,6 +32,25 @@ defmodule DomainContract.SchemaLifecycleTest do
     def local_echo(value), do: DomainContract.call(Owner, :echo, %{description: value})
   end
 
+  defmodule RootConsumer do
+    use DomainContract
+
+    contract do
+      version(1)
+      responsibility("Composes a consumer without copying its transitive schema graph.")
+      consumes(Consumer)
+    end
+  end
+
+  test "nested ownership has the same canonical metadata before and after export or transfer" do
+    root = Info.canonical(RootConsumer)
+    assert Map.keys(root["schemas"]) == [Schemas.id(Info.canonical(Consumer))]
+    assert [root] == root |> List.wrap() |> Schemas.bundle() |> Schemas.unbundle()
+    payload = %{"contracts" => [root]}
+    assert payload == payload |> Schemas.pack() |> Schemas.unpack_prepared()
+    assert Artifact.validate(root) == :ok
+  end
+
   defmodule SelfConsumer do
     use DomainContract
 
