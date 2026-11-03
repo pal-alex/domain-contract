@@ -45,8 +45,8 @@ defmodule DomainContract.Dsl do
     name: :types,
     target: DomainContract.DeclarationReference,
     args: [:module],
-    modules: [:module],
-    schema: [module: [type: :atom, required: true]],
+    no_depend_modules: [:module],
+    schema: [module: [type: :atom, required: true], only: [type: {:list, :atom}]],
     auto_set_fields: [kind: :entities]
   }
 

@@ -58,7 +58,9 @@ defmodule DomainContract.Info do
   def normalize(map), do: map |> encode() |> Jason.decode!()
   def json(source), do: source |> canonical() |> encode()
   def encode(value), do: value |> ordered() |> Jason.encode!(pretty: true)
-  defp named(items), do: items |> Enum.map(&plain/1) |> Enum.sort_by(& &1.name)
+
+  defp named(items),
+    do: items |> Enum.map(&plain/1) |> Enum.sort_by(&to_string(Map.get(&1, :name, &1["name"])))
 
   defp plain(%_{} = struct),
     do:

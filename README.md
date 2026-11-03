@@ -62,6 +62,52 @@ permits omission only; explicit null requires `{:nullable, type}` or a union wit
 `:null`. Closed entities reject unknown keys. Lists, dictionaries, unions, enums,
 variants, opaque values and open entities retain their validation semantics.
 
+### Selecting and reusing entity definitions
+
+Inside `contract do`, use `types(Module, only: [:task, :project])` to copy selected
+entities and their transitive entity dependencies into the consumer's format 8
+schema. `Module` may be a declaration fragment or a public owner. Names, field
+optionality, types and descriptions are preserved. This imports values only:
+it adds no operations, `consumes` permissions or runtime schema references.
+
+```elixir
+defmodule MyApp.Consumer do
+  use DomainContract
+  require MyApp.LocalTypes # orders compilation of a selected local fragment
+
+  contract do
+    version 1
+    responsibility "Owns consumer-specific behavior."
+    types(MyApp.LocalTypes, only: [:request])
+    types(MyApp.Tasks, only: [:task])
+  end
+end
+```
+
+For public owners, configure explicit JSON/BEAM inputs with
+`:domain_contract, :metadata_paths` (as below), or make the already compiled owner
+BEAM available on the code path. Resolution uses
+`DomainContract.Reference.resolve_metadata/1`: it never loads the owner or calls
+its metadata functions. An owner compiled only in memory must export its metadata
+first. Missing, invalid or conflicting owner metadata and unknown selection roots
+fail compilation. Explicit metadata takes precedence over code-path metadata.
+Recompile consumers when their selected metadata inputs change.
+
+For selected fragments, `require Fragment` before the contract when the fragment
+is compiled in the same build; this makes compilation order explicit without
+loading an unclassified public owner. Already loaded or code-path fragments need
+no extra ordering. The existing `types(Fragment)` still imports all declarations;
+`operations(Fragment)` is unchanged. Public-owner imports require `only:`.
+
+Fragment selections are resolved together, independent of import order. Each root
+must exist in its named fragment, but its dependencies may come from any other
+composed fragment or inline entity. `types(Fragment, only: [])` contributes no
+roots but makes its declarations available to other fragment roots. Unreachable
+fragment entries are pruned before validation. Owner dependencies are selected
+within that owner's metadata; consumer definitions cannot replace them. Reachable
+duplicate names fail even if definitions match. Import each source once, combining
+its roots in one `only:` list. Cyclic entity references are supported.
+
 ## Independent builds and replacement
 
 `DomainContract.Artifact.from_beam(bytes)` reads persisted canonical metadata

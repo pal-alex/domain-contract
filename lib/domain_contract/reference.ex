@@ -19,6 +19,19 @@ defmodule DomainContract.Reference do
   end
 
   def resolve(module) when is_atom(module) and not is_nil(module) do
+    resolve(module, true)
+  end
+
+  @doc """
+  Resolves explicit JSON/BEAM metadata or a BEAM on the code path, without loading
+  the owner or calling its metadata functions. Explicit inputs take precedence.
+  In-memory owners must export metadata first.
+  """
+  def resolve_metadata(module) when is_atom(module) and not is_nil(module) do
+    resolve(module, false)
+  end
+
+  defp resolve(module, load_code?) do
     paths = Application.get_env(:domain_contract, :metadata_paths, [])
 
     artifacts =
@@ -60,7 +73,7 @@ defmodule DomainContract.Reference do
       end
 
     loaded =
-      if compiled == [] and :code.is_loaded(module) != false and
+      if load_code? and compiled == [] and :code.is_loaded(module) != false and
            function_exported?(module, :__contract__, 0),
          do: [module.__contract__()],
          else: []
@@ -68,7 +81,7 @@ defmodule DomainContract.Reference do
     candidates = if external == [], do: compiled ++ loaded, else: external
 
     candidates =
-      if candidates == [] do
+      if load_code? and candidates == [] do
         case Code.ensure_compiled(module) do
           {:module, _} ->
             if function_exported?(module, :__contract__, 0), do: [module.__contract__()], else: []
