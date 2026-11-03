@@ -218,10 +218,11 @@ architecture metadata. Fields and validation stay in the record module. Struct
 construction and patterns require the exported `__struct__/0` identity; actual
 constructor calls are checked at their exact arity.
 
-Only `owns`, `uses`, `native`, and `exports` are accepted. Signatures are keyword
+The policy fields are `owns`, `uses`, `native`, `exports`, and `gateways`. Signatures are keyword
 lists (serialized as `[["fetch", 1]]`), including repeated names for multiple
-arities. Unknown fields and nonexistent dependencies/exports fail. There is no
-gateway or wildcard permission interface.
+arities. Unknown fields and nonexistent dependencies/exports fail. There are no
+wildcard permissions. Macros use their source name and arity, not BEAM's encoded
+`MACRO-name/(arity+1)` export.
 
 The checker reads the application's `.app` inventory and BEAM debug AST without
 starting the application or loading its implementation modules. Aliases, delegates,
@@ -232,6 +233,9 @@ repeated. No directories are excluded by default. Missing BEAM/debug info fails.
 Exact Spark/DomainContract/Phoenix metadata functions are recognized by signature
 and macro origin. Behaviour callbacks and declared Phoenix components are valid
 public entries; their implementation bodies are still checked.
+Entry adapters selected with `use DomainContract, entry: Adapter` can generate
+constant metadata functions. The compiler records their exact signatures and
+origin; executable adapter wrappers and user-written lookalikes remain checked.
 
 The equivalent API, after compilation, is
 `DomainContract.Architecture.check_application(:my_app, strict: true, exclude_dirs: [])`,
@@ -239,13 +243,45 @@ returning `:ok` or `{:error, diagnostics}`. Each violation identifies its reason
 module and available source location; references include the caller and target MFA.
 Without `strict: true`, only the complete-ownership requirement is relaxed.
 
-This first version checks native references within one application. Dependency
-library internals, erased compile-time macros, message protocols and whole-program
-data flow are outside its scope. Unresolved dynamic dispatch is an error, including
-variable-receiver dot access such as `value.field`, which can dispatch to a module
-on supported Elixir versions. This conservative rule also affects dynamic HEEx
-expressions; framework entry recognition does not exempt their bodies. Extend the
-analysis from concrete failures instead of granting broad exceptions.
+The checker discovers compiled owners in referenced dependency applications too.
+Discovery does not approve a dependency: an external helper still requires its
+owner in `uses`/`consumes` and its exact MFA in that owner's exports. Dependency
+bodies, erased macros, message protocols and whole-program data flow remain outside
+the selected application's check.
+
+Explicit `DomainContract.invoke/4`, macro-expanded calls and literal `apply` calls
+are checked for a declared `consumes` target and a real operation. Fully literal
+inputs are validated using the existing DSL schema. Computed inputs and results
+remain the runtime validator's responsibility; no schema shapes are duplicated.
+Literal operations and inputs on direct native `Owner.call/3` calls receive the
+same schema check, in addition to their dependency and exact-MFA checks.
+
+Unresolved dynamic dispatch is an error. `value.field` can dispatch to a module;
+the checker treats it as data only when a map/struct pattern, guard or local map
+binding proves its receiver is a map. Otherwise use an explicit map operation or
+provide a suitable pattern/guard. Behaviour callbacks and HEEx bodies are checked.
+
+For a real runtime callback port, declare only its reviewed invocation:
+
+```elixir
+gateways: [%{
+  module: MyApp.Transport,
+  function: :send, arity: 2,
+  kind: :callback,
+  dispatch: "deliver.(message)",
+  reason: "Invoke the delivery callback captured by the transport adapter."
+}]
+```
+
+Put this list inside the owner's `architecture` metadata. Copy the exact expanded
+`dispatch` expression from a diagnostic after reviewing the call. `:callback`
+means an anonymous-function invocation; `:native` means an intentional dynamic
+MFA; `:contract` means a contract router or reusable helper using a captured caller
+context. Contract gateways retain runtime context/grant/schema validation, and
+known operations and literal inputs are still checked when their schema is
+available. They do not grant a lexical dependency. A declaration matches only its
+owned module, caller name/arity, kind and expression; unused declarations fail.
+Static native calls and other expressions in the same function remain checked.
 
 The executable [golden-path fixture](test/fixtures/architecture/lib/example.ex)
 and its mutation tests exercise the small native API independently of a larger

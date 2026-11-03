@@ -1,6 +1,8 @@
 defmodule DomainContract.Architecture.Checker do
   @moduledoc false
   alias DomainContract.Architecture.Beam
+  alias DomainContract.Architecture.Catalog
+  alias DomainContract.Architecture.Gateway
 
   def check_application(application, opts) do
     with :ok <- options(opts),
@@ -22,16 +24,27 @@ defmodule DomainContract.Architecture.Checker do
           end
         end)
 
+      checked = Map.keys(beams)
+      references = Map.new(beams, fn {module, beam} -> {module, Beam.references(beam)} end)
+      beams = Catalog.extend(beams, references)
       {policies, errors} = policies(beams, errors)
       {claims, errors} = claims(policies, errors)
 
       {owners, errors} =
-        owners(beams, policies, claims, Keyword.get(opts, :strict, false), errors)
+        owners(
+          beams,
+          policies,
+          claims,
+          MapSet.new(if(Keyword.get(opts, :strict, false), do: checked, else: [])),
+          errors
+        )
 
       errors =
         errors ++
-          declarations(beams, policies, owners) ++
-          surfaces(beams, policies) ++ references(beams, policies, owners, claims)
+          declarations(beams, policies, owners, checked) ++
+          surfaces(beams, Map.take(policies, checked)) ++
+          gateways(beams, Map.take(policies, checked), owners, references) ++
+          references(beams, policies, owners, claims, references)
 
       case errors |> Enum.uniq() |> Enum.sort() do
         [] -> :ok
@@ -98,13 +111,16 @@ defmodule DomainContract.Architecture.Checker do
     architecture = Map.get(artifact["metadata"], "architecture", %{})
 
     with true <- is_map(architecture),
-         true <- Map.keys(architecture) -- ~w(owns uses native exports) == [],
+         true <- Map.keys(architecture) -- ~w(owns uses native exports gateways) == [],
          {:ok, owns} <- module_names(Map.get(architecture, "owns", [])),
          {:ok, uses} <- module_names(Map.get(architecture, "uses", [])),
          {:ok, native} <- signatures(Map.get(architecture, "native", [])),
-         {:ok, exports} <- exports(Map.get(architecture, "exports", %{})) do
+         {:ok, exports} <- exports(Map.get(architecture, "exports", %{})),
+         {:ok, gateways} <- Gateway.parse(Map.get(architecture, "gateways", [])) do
       {:ok,
        %{
+         contract: artifact,
+         gateways: gateways,
          owns: Enum.uniq([Atom.to_string(module) | owns]),
          uses: Enum.uniq(uses ++ Enum.map(artifact["consumes"], & &1["module"])),
          native: native ++ if(artifact["operations"] == [], do: [], else: [{"call", 3}]),
@@ -210,21 +226,22 @@ defmodule DomainContract.Architecture.Checker do
             {nil, :invalid_owner}
         end
 
-      reason = reason || if(strict and is_nil(owner), do: :unowned_module)
+      reason = reason || if(MapSet.member?(strict, module) and is_nil(owner), do: :unowned_module)
       errors = if reason, do: [diagnostic(module, beam.file, reason) | errors], else: errors
       {Map.put(owners, module, owner), errors}
     end)
   end
 
-  defp declarations(beams, policies, owners) do
+  defp declarations(beams, policies, owners, checked) do
     by_name = Map.new(beams, fn {module, beam} -> {Atom.to_string(module), beam} end)
 
-    Enum.flat_map(policies, fn {owner, policy} ->
+    Enum.flat_map(Map.take(policies, checked), fn {owner, policy} ->
       beam = beams[owner]
 
       dependencies =
         for dependency <- policy.uses,
             not Enum.any?(Map.keys(policies), &(Atom.to_string(&1) == dependency)),
+            not Enum.any?(policy.contract["consumes"], &(&1["module"] == dependency)),
             do: diagnostic(owner, beam.file, :unknown_dependency, %{dependency: dependency})
 
       exports =
@@ -245,7 +262,7 @@ defmodule DomainContract.Architecture.Checker do
   end
 
   defp missing_exports(owner, beam, signatures) do
-    actual = Enum.map(beam.exports, &signature/1)
+    actual = Enum.map(Beam.public_exports(beam), &signature/1)
 
     for signature <- signatures -- actual,
         do:
@@ -261,7 +278,7 @@ defmodule DomainContract.Architecture.Checker do
 
       for {mfa, kind, meta, _} = definition <- beam.definitions,
           kind in [:def, :defmacro],
-          not Beam.internal?(definition),
+          not Beam.internal?(definition, beam),
           mfa not in framework,
           signature(mfa) not in policy.native,
           do:
@@ -272,52 +289,211 @@ defmodule DomainContract.Architecture.Checker do
     end)
   end
 
-  defp references(beams, policies, owners, claims) do
-    Enum.flat_map(beams, fn {module, beam} ->
-      Enum.flat_map(Beam.references(beam), fn reference ->
-        details = Map.merge(reference, %{owner: owners[module]})
+  defp gateways(beams, policies, owners, references) do
+    by_name = Map.new(beams, fn {module, _} -> {Atom.to_string(module), module} end)
+
+    for {owner, policy} <- policies,
+        gateway <- policy.gateways,
+        module = by_name[gateway["module"]],
+        owners[module] != owner or
+          not Enum.any?(Map.get(references, module, []), &Gateway.matches?(gateway, module, &1)),
+        do: diagnostic(owner, beams[owner].file, :unused_gateway, %{gateway: gateway})
+  end
+
+  defp references(beams, policies, owners, claims, references) do
+    Enum.flat_map(references, fn {module, refs} ->
+      beam = beams[module]
+
+      gateways =
+        case policies[owners[module]] do
+          nil -> []
+          policy -> policy.gateways
+        end
+
+      refs
+      |> Enum.reject(fn reference ->
+        not Map.has_key?(reference, :contract) and
+          Enum.any?(gateways, &Gateway.matches?(&1, module, reference))
+      end)
+      |> Enum.flat_map(fn reference ->
+        details = reference |> Map.delete(:operation_call) |> Map.put(:owner, owners[module])
 
         case reference do
+          %{contract: target, operation: operation, input: input} ->
+            contract_reference(
+              module,
+              beam,
+              policies[owners[module]],
+              target,
+              operation,
+              input,
+              Map.drop(details, [:input, :operation]),
+              Enum.any?(gateways, &Gateway.matches?(&1, module, reference)),
+              policies[target]
+            )
+
           %{dynamic: _} ->
             [diagnostic(module, beam.file, :dynamic_dispatch, details)]
 
           %{target: {target, name, arity}} ->
             target_owner = Map.get(owners, target) || namespace_owner(target, claims)
 
-            cond do
-              not Map.has_key?(beams, target) and :code.which(target) == :non_existing ->
-                [diagnostic(module, beam.file, :unresolved_module, details)]
+            operation_errors =
+              case {Map.get(reference, :operation_call), policies[target]} do
+                {{operation, input}, %{contract: %{"operations" => [_ | _]} = schema}}
+                when is_binary(operation) or (is_atom(operation) and not is_nil(operation)) ->
+                  contract_input(module, beam, schema, operation, input, details)
 
-              is_nil(target_owner) ->
-                []
+                _ ->
+                  []
+              end
 
-              owners[module] == target_owner ->
-                []
+            operation_errors ++
+              cond do
+                not Map.has_key?(beams, target) and :code.which(target) == :non_existing ->
+                  [diagnostic(module, beam.file, :unresolved_module, details)]
 
-              true ->
-                policy = policies[owners[module]]
-                declared? = policy && Atom.to_string(target_owner) in policy.uses
+                is_nil(target_owner) ->
+                  []
 
-                exported? =
-                  exported?(beams[target], policies[target_owner], target_owner, name, arity)
+                owners[module] == target_owner ->
+                  []
 
-                for {reason, valid?} <- [
-                      undeclared_dependency: declared?,
-                      private_reference: exported?
-                    ],
-                    valid? != true,
-                    do:
-                      diagnostic(
-                        module,
-                        beam.file,
-                        reason,
-                        Map.put(details, :target_owner, target_owner)
-                      )
-            end
+                true ->
+                  policy = policies[owners[module]]
+                  declared? = policy && Atom.to_string(target_owner) in policy.uses
+
+                  exported? =
+                    exported?(beams[target], policies[target_owner], target_owner, name, arity)
+
+                  for {reason, valid?} <- [
+                        undeclared_dependency: declared?,
+                        private_reference: exported?
+                      ],
+                      valid? != true,
+                      do:
+                        diagnostic(
+                          module,
+                          beam.file,
+                          reason,
+                          Map.put(details, :target_owner, target_owner)
+                        )
+              end
         end
       end)
     end)
   end
+
+  defp contract_reference(
+         module,
+         beam,
+         policy,
+         target,
+         operation,
+         input,
+         details,
+         gateway?,
+         target_policy
+       ) do
+    reference =
+      policy && Enum.find(policy.contract["consumes"], &(&1["module"] == Atom.to_string(target)))
+
+    cond do
+      is_nil(reference) and not gateway? ->
+        [diagnostic(module, beam.file, :undeclared_contract_dependency, details)]
+
+      not (is_binary(operation) or (is_atom(operation) and not is_nil(operation))) and
+          not gateway? ->
+        [
+          diagnostic(
+            module,
+            beam.file,
+            :dynamic_dispatch,
+            Map.put(details, :dynamic, :contract_operation)
+          )
+        ]
+
+      true ->
+        schema =
+          cond do
+            reference -> DomainContract.Reference.definition(reference, policy.contract)
+            target_policy -> target_policy.contract
+            true -> nil
+          end
+
+        if schema && (is_binary(operation) or (is_atom(operation) and not is_nil(operation))) do
+          contract_input(module, beam, schema, operation, input, details)
+        else
+          []
+        end
+    end
+  end
+
+  defp contract_input(module, beam, schema, operation, input, details) do
+    details = Map.put(details, :operation, to_string(operation))
+
+    if Enum.any?(schema["operations"], &(&1["name"] == to_string(operation))) do
+      case literal(input) do
+        {:ok, value} ->
+          case DomainContract.Runtime.input(schema, operation, value) do
+            :ok ->
+              []
+
+            {:error, error} ->
+              [
+                diagnostic(
+                  module,
+                  beam.file,
+                  :invalid_contract_input,
+                  Map.put(details, :error, error)
+                )
+              ]
+          end
+
+        :dynamic ->
+          []
+      end
+    else
+      [diagnostic(module, beam.file, :unknown_contract_operation, details)]
+    end
+  end
+
+  # Decode data only; checking a build must never evaluate application code.
+  defp literal({:%{}, _, fields}) do
+    case literal(fields) do
+      {:ok, fields} -> {:ok, Map.new(fields)}
+      :dynamic -> :dynamic
+    end
+  end
+
+  defp literal({:{}, _, fields}) do
+    case literal(fields) do
+      {:ok, fields} -> {:ok, List.to_tuple(fields)}
+      :dynamic -> :dynamic
+    end
+  end
+
+  defp literal({left, right}) do
+    with {:ok, left} <- literal(left), {:ok, right} <- literal(right), do: {:ok, {left, right}}
+  end
+
+  defp literal(list) when is_list(list) do
+    Enum.reduce_while(list, {:ok, []}, fn item, {:ok, values} ->
+      case literal(item) do
+        {:ok, value} -> {:cont, {:ok, [value | values]}}
+        :dynamic -> {:halt, :dynamic}
+      end
+    end)
+    |> case do
+      {:ok, values} -> {:ok, Enum.reverse(values)}
+      :dynamic -> :dynamic
+    end
+  end
+
+  defp literal(value) when is_atom(value) or is_binary(value) or is_number(value),
+    do: {:ok, value}
+
+  defp literal(_), do: :dynamic
 
   defp exported?(nil, _, _, _, _), do: false
 

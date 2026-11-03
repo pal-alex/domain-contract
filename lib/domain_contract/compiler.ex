@@ -102,6 +102,10 @@ defmodule DomainContract.Compiler do
         module -> module.compile(env, artifact, [])
       end
 
+    # Entry adapters may emit constant metadata functions. Record only those
+    # exact definitions; their executable wrappers must still be inspected.
+    entry_metadata = entry_metadata(platform)
+
     entry =
       if operations != [] do
         quote do
@@ -115,6 +119,8 @@ defmodule DomainContract.Compiler do
       unquote(entry)
       Module.register_attribute(__MODULE__, :domain_contract_artifact, persist: true)
       Module.register_attribute(__MODULE__, :domain_contract_implementation, persist: true)
+      Module.register_attribute(__MODULE__, :domain_contract_entry_metadata, persist: true)
+      @domain_contract_entry_metadata unquote(Macro.escape(entry_metadata))
       @domain_contract_artifact unquote(Macro.escape(artifact))
       @domain_contract_implementation %{
         contracts: [unquote(artifact["module"])],
@@ -127,5 +133,22 @@ defmodule DomainContract.Compiler do
       @doc false
       def __domain_contract_operations__, do: unquote(covered)
     end
+  end
+
+  defp entry_metadata(platform) do
+    {_, definitions} =
+      Macro.prewalk(platform, [], fn
+        {:def, meta, [{name, _, args}, [do: body]]} = node, definitions
+        when args == [] or is_atom(args) ->
+          if is_atom(meta[:context]) and not is_nil(meta[:context]) and
+               Macro.quoted_literal?(body),
+             do: {node, [{{name, 0}, meta[:context]} | definitions]},
+             else: {node, definitions}
+
+        node, definitions ->
+          {node, definitions}
+      end)
+
+    definitions
   end
 end

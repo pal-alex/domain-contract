@@ -132,6 +132,149 @@ defmodule DomainContract.ArchitectureTest do
     assert Architecture.check_application(:architecture_example) == :ok
   end
 
+  test "proven map access is data while an unguarded dot access remains dynamic", ctx do
+    text =
+      String.replace(source(), "def run(id), do: Stock.fetch(id)", """
+      def run(%{} = id), do: id.field
+      def run(id) when is_map(id), do: id.field
+      def run(id), do: id.field
+      """)
+
+    compile!(ctx, text)
+    assert [%{dispatch: "id.field"}] = reasons(errors(), :dynamic_dispatch)
+  end
+
+  test "map proofs stay inside their guard branches and variable versions", ctx do
+    text =
+      String.replace(source(), "def run(id), do: Stock.fetch(id)", """
+      def run(id) do
+        case id do
+          value when is_map(value) -> value.field
+          value -> value.field
+        end
+        value = %{field: 1}
+        _ = value.field
+        value = id
+        value.field
+      end
+      """)
+
+    compile!(ctx, text)
+    assert length(reasons(errors(), :dynamic_dispatch)) == 2
+  end
+
+  test "an or guard does not prove a receiver is always a map", ctx do
+    text =
+      String.replace(
+        source(),
+        "def run(id), do: Stock.fetch(id)",
+        "def run(id) when is_map(id) or is_atom(id), do: id.field"
+      )
+
+    compile!(ctx, text)
+    assert [%{dispatch: "id.field"}] = reasons(errors(), :dynamic_dispatch)
+  end
+
+  test "an exact callback gateway permits only its reviewed invocation", ctx do
+    compile!(ctx, gateway_source())
+    assert Architecture.check_application(:architecture_example, strict: true) == :ok
+  end
+
+  test "callback gateways cannot authorize a different arity or a static private call", ctx do
+    text =
+      gateway_source()
+      |> String.replace(
+        "def run(id), do: id.(1)",
+        "def run(id), do: {id.(1), id.(1, 2), Stock.Helper.secret()}"
+      )
+
+    compile!(ctx, text)
+    assert [%{dispatch: "id.(1, 2)"}] = reasons(errors(), :dynamic_dispatch)
+    assert [%{target: {@helper, :secret, 0}}] = reasons(errors(), :private_reference)
+  end
+
+  test "stale gateways fail instead of accumulating exemptions", ctx do
+    compile!(
+      ctx,
+      String.replace(
+        gateway_source(),
+        "def run(id), do: id.(1)",
+        "def run(id), do: Stock.fetch(id)"
+      )
+    )
+
+    assert [%{reason: :unused_gateway}] = errors()
+  end
+
+  test "captured caller-context gateways do not invent a lexical dependency", ctx do
+    dispatch = "DomainContract.invoke(nil, ArchitectureExample.Inventory, \"fetch\", id)"
+
+    text =
+      contract_source()
+      |> String.replace("consumes(Stock)", "")
+      |> String.replace("native: [run: 1]", """
+      native: [run: 1], gateways: [%{
+        module: ArchitectureExample.Checkout, function: :run, arity: 1,
+        kind: :contract, dispatch: #{inspect(dispatch)},
+        reason: "This test models a reusable port; runtime verifies the supplied context."
+      }]
+      """)
+
+    compile!(ctx, text)
+    assert Architecture.check_application(:architecture_example, strict: true) == :ok
+  end
+
+  test "a declared macro uses its source arity rather than the encoded BEAM arity", ctx do
+    text =
+      inject(source(), @inventory, "defmacro sample(value), do: value")
+      |> String.replace("native: [fetch: 1]", "native: [fetch: 1, sample: 1]")
+
+    compile!(ctx, text)
+    assert Architecture.check_application(:architecture_example, strict: true) == :ok
+  end
+
+  test "cross-application native calls require the external owner's exact exports", ctx do
+    compile!(ctx, String.replace(source(), "Stock.fetch(id)", "Stock.Helper.fetch(id)"))
+    split_application!(ctx)
+    assert [%{target: {@helper, :fetch, 1}}] = reasons(errors(), :private_reference)
+  end
+
+  test "discovering an external owner does not approve an undeclared dependency", ctx do
+    compile!(ctx, String.replace(source(), "uses: [Stock]", "uses: []"))
+    split_application!(ctx)
+    assert [%{target: {@inventory, :fetch, 1}}] = reasons(errors(), :undeclared_dependency)
+  end
+
+  test "explicit external contract dependencies pass", ctx do
+    compile!(ctx, contract_source())
+    split_application!(ctx)
+    assert Architecture.check_application(:architecture_example, strict: true) == :ok
+  end
+
+  defp split_application!(ctx) do
+    for {app, modules} <- [
+          architecture_example: [@checkout],
+          architecture_stock: [@inventory, @helper, @record]
+        ] do
+      File.write!(
+        Path.join([ctx.tmp_dir, "ebin", "#{app}.app"]),
+        :io_lib.format(~c"~tp.~n", [{:application, app, [modules: modules]}])
+      )
+    end
+  end
+
+  defp gateway_source do
+    source()
+    |> String.replace("Stock.fetch(id)", "id.(1)")
+    |> String.replace("native: [run: 1]", """
+    native: [run: 1], gateways: [%{
+      module: ArchitectureExample.Checkout, function: :run, arity: 1,
+      kind: :callback, dispatch: "id.(1)",
+      reason: "Invoke the callback supplied by the caller with the item ID."
+    }]
+    """)
+  end
+
   test "a nonexistent helper cannot pass just because its namespace has an owner", ctx do
     text =
       String.replace(
@@ -252,6 +395,146 @@ defmodule DomainContract.ArchitectureTest do
   end
 
   test "contract operations expose only call/3 and consumes supplies the dependency", ctx do
+    compile!(ctx, contract_source("Stock.call(\"fetch\", id, nil)"))
+    assert Architecture.check_application(:architecture_example, strict: true) == :ok
+  end
+
+  test "explicit invoke checks a real declared operation without starting its application", ctx do
+    compile!(ctx, contract_source())
+    assert Architecture.check_application(:architecture_example, strict: true) == :ok
+  end
+
+  test "invoke cannot replace consumes with native uses", ctx do
+    text =
+      contract_source()
+      |> String.replace("consumes(Stock)", "")
+      |> String.replace("native: [run: 1]", "uses: [Stock], native: [run: 1]")
+
+    compile!(ctx, text)
+
+    assert [%{module: @checkout, contract: @inventory}] =
+             reasons(errors(), :undeclared_contract_dependency)
+  end
+
+  test "invoke rejects a misspelled operation in an Owned helper", ctx do
+    text =
+      String.replace(
+        contract_source(),
+        "DomainContract.invoke(nil, Stock, \"fetch\", id)",
+        "ArchitectureExample.Checkout.Helper.run(id)"
+      )
+
+    text =
+      text <>
+        """
+
+        defmodule ArchitectureExample.Checkout.Helper do
+          use DomainContract.Owned, owner: ArchitectureExample.Checkout
+          alias ArchitectureExample.Inventory, as: Stock
+          def run(id), do: DomainContract.invoke(nil, Stock, "fetxh", id)
+        end
+        """
+
+    compile!(ctx, text)
+
+    assert [%{module: ArchitectureExample.Checkout.Helper, operation: "fetxh"}] =
+             reasons(errors(), :unknown_contract_operation)
+  end
+
+  test "invoke validates fully literal input using the existing payload schema", ctx do
+    compile!(
+      ctx,
+      contract_source("DomainContract.invoke(nil, Stock, \"fetch\", \"wrong\")")
+      |> String.replace("def run(id)", "def run(_id)")
+    )
+
+    assert [%{operation: "fetch"}] = reasons(errors(), :invalid_contract_input)
+  end
+
+  test "unknown dynamic contract target and operation are surfaced", ctx do
+    compile!(
+      ctx,
+      contract_source(
+        "{DomainContract.invoke(nil, id, \"fetch\", 1), DomainContract.invoke(nil, Stock, id, 1)}"
+      )
+    )
+
+    assert Enum.sort(Enum.map(reasons(errors(), :dynamic_dispatch), & &1.dynamic)) ==
+             [:contract_operation, :contract_target]
+  end
+
+  test "macro-expanded call and imported invoke retain their operation checks", ctx do
+    text =
+      contract_source(
+        "{invoke(nil, Stock, \"missing\", id), DomainContract.call(Stock, \"fetch\", \"bad\")}"
+      )
+      |> inject(@checkout, "import DomainContract, only: [invoke: 4]")
+
+    compile!(ctx, text)
+    assert [%{operation: "missing"}] = reasons(errors(), :unknown_contract_operation)
+    assert [%{operation: "fetch"}] = reasons(errors(), :invalid_contract_input)
+  end
+
+  test "literal apply to invoke cannot hide its contract operation", ctx do
+    compile!(
+      ctx,
+      contract_source("apply(DomainContract, :invoke, [nil, Stock, \"missing\", id])")
+    )
+
+    assert [%{operation: "missing"}] = reasons(errors(), :unknown_contract_operation)
+  end
+
+  test "native call/3 cannot hide a literal invalid operation or payload", ctx do
+    compile!(
+      ctx,
+      contract_source("{Stock.call(\"missing\", id, nil), Stock.call(\"fetch\", \"wrong\", nil)}")
+    )
+
+    assert [%{operation: "missing"}] = reasons(errors(), :unknown_contract_operation)
+    assert [%{operation: "fetch"}] = reasons(errors(), :invalid_contract_input)
+  end
+
+  test "literal apply to native call/3 checks the same operation", ctx do
+    compile!(ctx, contract_source("apply(Stock, :call, [\"missing\", id, nil])"))
+    assert [%{operation: "missing"}] = reasons(errors(), :unknown_contract_operation)
+  end
+
+  test "entry adapters exempt only their exact generated constant metadata", ctx do
+    adapter = ~S"""
+    defmodule ArchitectureExample.Inventory.Adapter do
+      def compile(_env, _artifact, _options) do
+        quote do
+          def __transport_metadata__, do: %{transport: :captured}
+          def runtime_helper, do: System.get_env("ARCHITECTURE_TEST")
+        end
+      end
+    end
+    """
+
+    text =
+      String.replace(
+        source(),
+        "use DomainContract\n",
+        "use DomainContract, entry: ArchitectureExample.Inventory.Adapter\n",
+        global: false
+      )
+
+    compile!(ctx, adapter <> text)
+
+    assert [%{module: @inventory, function: {:runtime_helper, 0}}] =
+             reasons(errors(), :extra_public_function)
+  end
+
+  test "a matching metadata name written by application code is still a public function", ctx do
+    compile!(
+      ctx,
+      inject(source(), @inventory, "def __transport_metadata__, do: %{transport: :captured}")
+    )
+
+    assert [%{function: {:__transport_metadata__, 0}}] = reasons(errors(), :extra_public_function)
+  end
+
+  defp contract_source(call \\ "DomainContract.invoke(nil, Stock, \"fetch\", id)") do
     text = String.replace(source(), "native: [fetch: 1],", "native: [],")
 
     text =
@@ -277,9 +560,7 @@ defmodule DomainContract.ArchitectureTest do
         "consumes(Stock)\n metadata(%{architecture: %{native: [run: 1]}})"
       )
 
-    text = String.replace(text, "Stock.fetch(id)", "Stock.call(\"fetch\", id, nil)")
-    compile!(ctx, text)
-    assert Architecture.check_application(:architecture_example, strict: true) == :ok
+    String.replace(text, "Stock.fetch(id)", call)
   end
 
   test "malformed metadata and unknown policy fields fail closed", ctx do
