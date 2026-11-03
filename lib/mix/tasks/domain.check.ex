@@ -1,7 +1,15 @@
 defmodule Mix.Tasks.Domain.Check do
-  @shortdoc "Checks provider and consumer compatibility in exported contract files"
+  @shortdoc "Checks compiled native boundaries or exported contract compatibility"
   @moduledoc """
-  Checks candidate exports against immutable owner exports.
+  To check native boundaries and ownership of a compiled application:
+
+      mix domain.check --application my_app --strict
+
+  `--exclude-dir test/support` excludes an explicit source directory (repeatable).
+  This mode compiles with warnings as errors and reads BEAM files without starting
+  the application. It cannot be combined with artifact paths or artifact options.
+
+  To check candidate exports against immutable owner exports:
 
       mix domain.check --authority public.json candidate.json consumer.json
 
@@ -25,10 +33,52 @@ defmodule Mix.Tasks.Domain.Check do
   @impl true
   def run(args) do
     {options, paths, invalid} =
-      OptionParser.parse(args, strict: [authority: :keep, declarations: :boolean])
+      OptionParser.parse(args,
+        strict: [
+          authority: :keep,
+          declarations: :boolean,
+          application: :string,
+          strict: :boolean,
+          exclude_dir: :keep
+        ]
+      )
 
     if invalid != [], do: Mix.raise("invalid domain.check options: #{inspect(invalid)}")
 
+    if options[:application] do
+      if paths != [] or Keyword.has_key?(options, :authority) or
+           Keyword.has_key?(options, :declarations),
+         do: Mix.raise("--application cannot be combined with artifact paths or options")
+
+      Mix.Task.run("compile", ["--warnings-as-errors"])
+      check_application(options)
+    else
+      if Keyword.has_key?(options, :strict) or Keyword.has_key?(options, :exclude_dir),
+        do: Mix.raise("--strict and --exclude-dir require --application")
+
+      check_artifacts(options, paths)
+    end
+  end
+
+  defp check_application(options) do
+    result =
+      DomainContract.Architecture.check_application(String.to_atom(options[:application]),
+        strict: Keyword.get(options, :strict, false),
+        exclude_dirs: Keyword.get_values(options, :exclude_dir)
+      )
+
+    case result do
+      :ok ->
+        Mix.shell().info("Domain architecture is valid (#{options[:application]})")
+
+      {:error, diagnostics} ->
+        Mix.raise(
+          "Invalid domain architecture:\n" <> Enum.map_join(diagnostics, "\n", &inspect/1)
+        )
+    end
+  end
+
+  defp check_artifacts(options, paths) do
     if options[:declarations] && Keyword.has_key?(options, :authority),
       do: Mix.raise("--declarations cannot be combined with --authority")
 

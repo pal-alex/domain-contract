@@ -1,7 +1,31 @@
 defmodule DomainContract.Architecture do
-  @moduledoc "Deterministic public architecture export and directional review reports."
+  @moduledoc "Compiled application boundary checks, architecture exports and directional review reports."
   alias DomainContract.Compatibility
   alias DomainContract.Info
+
+  @doc """
+  Checks native boundaries in a compiled application's BEAM files without starting it.
+
+  Owners declare `metadata %{architecture: %{uses: [OtherOwner], native: [read: 1]}}`
+  in their inline contracts. Each owner owns its namespace; `owns` adds namespaces,
+  and `DomainContract.Owned` assigns helpers outside those namespaces. `exports`
+  publishes exact signatures of owned helpers, for example
+  `%{Owner.Record => [__struct__: 0, __struct__: 1]}`. `consumes` also declares a
+  dependency. Cross-owner references require both a dependency and an exported MFA.
+
+  Options:
+
+    * `:strict` — require an owner for every application module (default `false`).
+    * `:exclude_dirs` — explicit source directories to omit (default `[]`).
+
+  Compile with debug info before calling. Missing/unrecognized debug info and
+  unresolved dynamic dispatch are errors. This first checker covers native Elixir
+  references within the selected application; it is not a whole-program analysis
+  of dependency libraries, erased compile-time macros, or message protocols.
+  """
+  @spec check_application(atom(), keyword()) :: :ok | {:error, [map()]}
+  def check_application(application, opts \\ []),
+    do: DomainContract.Architecture.Checker.check_application(application, opts)
 
   def export(contracts),
     do: contracts |> Enum.map(&Info.canonical/1) |> Enum.sort_by(& &1["module"])

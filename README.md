@@ -185,6 +185,78 @@ repeats effects automatically.
 
 ## Architecture review
 
+Check native boundaries in a compiled application explicitly:
+
+```sh
+mix domain.check --application my_app --strict
+```
+
+The minimal path is two owners, one declared dependency and an exact native
+signature. The provider publishes its entry point in its existing inline contract:
+
+```elixir
+# MyApp.Inventory's contract
+metadata(%{architecture: %{native: [fetch: 1]}})
+
+# MyApp.Checkout's contract
+metadata(%{architecture: %{uses: [MyApp.Inventory], native: [run: 1]}})
+```
+
+`MyApp.Checkout.run/1` can now call `MyApp.Inventory.fetch/1`. Calling an inventory
+helper, calling `fetch/2`, or removing `uses` fails the check. Extra public owner
+functions fail even when nobody calls them. `consumes` also declares dependencies;
+contracts with operations expose `call/3`. Native payloads and results retain their
+existing Elixir schemas; this check does not add runtime payload validation.
+
+An owner owns its namespace. `owns: [MyApp.OtherNamespace]` adds a namespace; the
+closest owner wins and equal claims by different owners fail. Existing
+`use DomainContract.Owned, owner: MyApp.Inventory` annotations assign helpers outside
+that namespace and must agree with any namespace owner. Helper functions can be
+public within the owner. To publish a record, explicitly add, for example,
+`exports: %{MyApp.Inventory.Record => [__struct__: 0, __struct__: 1]}` to its owner's
+architecture metadata. Fields and validation stay in the record module. Struct
+construction and patterns require the exported `__struct__/0` identity; actual
+constructor calls are checked at their exact arity.
+
+Only `owns`, `uses`, `native`, and `exports` are accepted. Signatures are keyword
+lists (serialized as `[["fetch", 1]]`), including repeated names for multiple
+arities. Unknown fields and nonexistent dependencies/exports fail. There is no
+gateway or wildcard permission interface.
+
+The checker reads the application's `.app` inventory and BEAM debug AST without
+starting the application or loading its implementation modules. Aliases, delegates,
+remote captures, literal `apply`, and struct references are checked after expansion.
+`--strict` requires ownership for every module, including generated modules.
+`--exclude-dir test/support` explicitly excludes a source directory and can be
+repeated. No directories are excluded by default. Missing BEAM/debug info fails.
+Exact Spark/DomainContract/Phoenix metadata functions are recognized by signature
+and macro origin. Behaviour callbacks and declared Phoenix components are valid
+public entries; their implementation bodies are still checked.
+
+The equivalent API, after compilation, is
+`DomainContract.Architecture.check_application(:my_app, strict: true, exclude_dirs: [])`,
+returning `:ok` or `{:error, diagnostics}`. Each violation identifies its reason,
+module and available source location; references include the caller and target MFA.
+Without `strict: true`, only the complete-ownership requirement is relaxed.
+
+This first version checks native references within one application. Dependency
+library internals, erased compile-time macros, message protocols and whole-program
+data flow are outside its scope. Unresolved dynamic dispatch is an error, including
+variable-receiver dot access such as `value.field`, which can dispatch to a module
+on supported Elixir versions. This conservative rule also affects dynamic HEEx
+expressions; framework entry recognition does not exempt their bodies. Extend the
+analysis from concrete failures instead of granting broad exceptions.
+
+The executable [golden-path fixture](test/fixtures/architecture/lib/example.ex)
+and its mutation tests exercise the small native API independently of a larger
+application migration. To run the fixture from a clean build:
+
+```sh
+cd test/fixtures/architecture
+mix deps.get
+mix domain.check --application architecture_example --strict
+```
+
 `mix domain.export --output architecture.json` exports owner BEAM metadata without
 starting the application. `mix domain.diff before.json after.json --json review.json`
 produces readable and machine reports, separating compatible and incompatible
@@ -207,8 +279,10 @@ Only public declarations enter diffs. Source diagnostics identify explicit reser
 UI delivery and potential private owner calls. Forwarding all assigns in HEEx emits
 a prop propagation warning; growing a surface with at least 20 operations plus
 dependencies emits a composition warning. These are review heuristics, not errors.
-Dynamic dispatch, aliases, business cohesion and prose obligations require human review and
-behavioral tests. Boundary continues to enforce configured implementation boundaries.
+These source-only review heuristics do not resolve aliases or dynamic dispatch;
+the compiled application check above is separate. Business cohesion and prose
+obligations require human review and behavioral tests. Boundary continues to enforce
+configured implementation boundaries.
 Run `mix verify` for formatting, compilation with warnings as errors and all tests.
 
 Format transition and coordinated runtime rollout: [format 8 deployment](docs/format-8-deployment.txt).
