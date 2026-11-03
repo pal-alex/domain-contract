@@ -594,6 +594,80 @@ defmodule DomainContract.ArchitectureTest do
     assert Architecture.check_application(:architecture_example, strict: true) == :ok
   end
 
+  test "Phoenix controller dispatch is recognized without hiding action bodies", ctx do
+    compile!(
+      ctx,
+      source() <>
+        """
+        defmodule ArchitectureExample.Checkout.Controller do
+          use Phoenix.Controller, formats: [:html]
+          def index(conn, _params), do: ArchitectureExample.Inventory.Helper.fetch(conn)
+        end
+        """
+    )
+
+    assert reasons(errors(), :dynamic_dispatch) == []
+
+    assert [%{caller: {:index, 2}, target: {@helper, :fetch, 1}}] =
+             reasons(errors(), :private_reference)
+  end
+
+  test "a user controller action override is not framework dispatch", ctx do
+    compile!(
+      ctx,
+      source() <>
+        """
+        defmodule ArchitectureExample.Checkout.Controller do
+          use Phoenix.Controller, formats: [:html]
+          def action(conn_before, _opts), do: conn_before.private
+        end
+        """
+    )
+
+    assert [%{caller: {:"action (overridable 2)", 2}, dispatch: "conn_before.private"}] =
+             reasons(errors(), :dynamic_dispatch)
+  end
+
+  test "endpoint data reads require the defining framework origin", ctx do
+    compile!(
+      ctx,
+      source() <>
+        """
+        defmodule ArchitectureExample.Checkout.Endpoint do
+          use Phoenix.Endpoint, otp_app: :domain_contract
+        end
+        defmodule ArchitectureExample.Checkout.Impostor do
+          def url, do: persistent!().url
+          defp persistent!, do: Application.get_env(:domain_contract, :url_module)
+        end
+        """
+    )
+
+    dynamics = reasons(errors(), :dynamic_dispatch)
+
+    assert Enum.any?(
+             dynamics,
+             &match?(
+               %{module: ArchitectureExample.Checkout.Impostor, dispatch: "persistent!().url"},
+               &1
+             )
+           )
+
+    refute Enum.any?(
+             dynamics,
+             &(&1.module == ArchitectureExample.Checkout.Endpoint and
+                 &1.dispatch in [
+                   "persistent!().url",
+                   "persistent!().struct_url",
+                   "persistent!().static_url",
+                   "persistent!().static_path",
+                   "persistent!().script_name",
+                   "persistent!().path",
+                   "persistent!().host"
+                 ])
+           )
+  end
+
   test "framework callbacks are valid entry points but their bodies are still checked", ctx do
     text =
       inject(

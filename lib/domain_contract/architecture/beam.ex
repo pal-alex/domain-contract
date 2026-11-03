@@ -142,9 +142,14 @@ defmodule DomainContract.Architecture.Beam do
     beam.definitions
     |> Enum.reject(&internal?(&1, beam))
     |> Enum.flat_map(fn {signature, _, meta, clauses} ->
-      Enum.flat_map(clauses, fn {_, args, guards, body} ->
+      Enum.flat_map(clauses, fn {clause_meta, args, guards, body} ->
         body = DomainContract.Architecture.MapAccess.annotate(body, args, guards)
+
         walk([args, guards, body], [])
+        |> Enum.reject(fn reference ->
+          meta[:context] == clause_meta[:context] and
+            framework_reference?(reference, signature, meta[:context], beam.module)
+        end)
       end)
       |> Enum.map(fn reference ->
         reference
@@ -154,6 +159,47 @@ defmodule DomainContract.Architecture.Beam do
     end)
     |> Enum.uniq()
   end
+
+  # These expressions belong to the framework's own implementation, identified
+  # by the defining macro on both the definition and clause. Never skip its
+  # whole body: expanded application calls and user overrides still need checks.
+  defp framework_reference?(
+         %{dynamic: :call, dispatch: dispatch},
+         {name, arity},
+         Phoenix.Endpoint,
+         _module
+       )
+       when {name, arity} in [
+              url: 0,
+              struct_url: 0,
+              static_url: 0,
+              static_path: 1,
+              script_name: 0,
+              path: 1,
+              host: 0
+            ] do
+    dispatch == "persistent!().#{name}"
+  end
+
+  defp framework_reference?(
+         %{dynamic: :call, dispatch: dispatch},
+         {:action, 2},
+         Phoenix.Controller.Pipeline,
+         _module
+       ) do
+    dispatch in ["conn_before.private", "conn_before.private.phoenix_action"]
+  end
+
+  defp framework_reference?(
+         %{dynamic: :apply, dispatch: dispatch},
+         {:"action (overridable 2)", 2},
+         Phoenix.Controller.Pipeline,
+         module
+       ) do
+    dispatch == ":erlang.apply(#{inspect(module)}, action, [conn, conn.params])"
+  end
+
+  defp framework_reference?(_, _, _, _), do: false
 
   # A capture's AST contains a zero-argument call-shaped node. Do not also
   # count that node as /0; the capture's declared arity is the reference.
