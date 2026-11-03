@@ -25,6 +25,30 @@ defmodule DomainContract.Architecture.MapAccess do
     {:->, meta, [annotate(args, known), annotate(body, scoped)]}
   end
 
+  defp annotate({:with, meta, args}, known) do
+    {qualifiers, [options]} = Enum.split(args, -1)
+
+    {qualifiers, scoped} =
+      Enum.map_reduce(qualifiers, known, fn
+        {:<-, meta, [pattern, expression]}, known ->
+          scoped = MapSet.union(known, patterns(pattern))
+          scoped = MapSet.union(scoped, pattern_guards([pattern]))
+
+          {{:<-, meta, [annotate(pattern, scoped), annotate(expression, known)]}, scoped}
+
+        expression, known ->
+          {annotate(expression, known), MapSet.union(known, patterns(expression))}
+      end)
+
+    options =
+      Enum.map(options, fn
+        {:do, body} -> {:do, annotate(body, scoped)}
+        {key, body} -> {key, annotate(body, known)}
+      end)
+
+    {:with, meta, qualifiers ++ [options]}
+  end
+
   defp annotate({{:., dot, [receiver, name]}, meta, []}, known) do
     proven =
       meta[:no_parens] == true and
@@ -48,6 +72,7 @@ defmodule DomainContract.Architecture.MapAccess do
 
   # Facts in a nested branch are scoped by annotate/2, not by its enclosing block.
   defp patterns({:->, _, _}), do: MapSet.new()
+  defp patterns({:with, _, _}), do: MapSet.new()
   defp patterns(tuple) when is_tuple(tuple), do: patterns(Tuple.to_list(tuple))
 
   defp patterns(list) when is_list(list),

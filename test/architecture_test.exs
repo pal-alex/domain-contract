@@ -175,6 +175,44 @@ defmodule DomainContract.ArchitectureTest do
     assert [%{dispatch: "id.field"}] = reasons(errors(), :dynamic_dispatch)
   end
 
+  test "with map and struct patterns prove later qualifiers and the successful body", ctx do
+    text =
+      String.replace(source(), "def run(id), do: Stock.fetch(id)", """
+      def run(id) do
+        with %{} = record <- id,
+             true <- record.field,
+             %Stock.Record{} = result <- record.result do
+          result.id
+        end
+      end
+      """)
+
+    compile!(ctx, text)
+    assert Architecture.check_application(:architecture_example, strict: true) == :ok
+  end
+
+  test "with proofs do not reach preceding expressions, else clauses or rebound variables", ctx do
+    text =
+      String.replace(source(), "def run(id), do: Stock.fetch(id)", """
+      def run(id) do
+        with value <- id,
+             _ <- value.before,
+             %{} = value <- value,
+             _ <- value.proven,
+             value <- id do
+          value.rebound
+        else
+          value -> value.failed
+        end
+      end
+      """)
+
+    compile!(ctx, text)
+
+    assert Enum.sort(Enum.map(reasons(errors(), :dynamic_dispatch), & &1.dispatch)) ==
+             ["value.before", "value.failed", "value.rebound"]
+  end
+
   test "an exact callback gateway permits only its reviewed invocation", ctx do
     compile!(ctx, gateway_source())
     assert Architecture.check_application(:architecture_example, strict: true) == :ok
@@ -626,6 +664,29 @@ defmodule DomainContract.ArchitectureTest do
 
     assert [%{caller: {:"action (overridable 2)", 2}, dispatch: "conn_before.private"}] =
              reasons(errors(), :dynamic_dispatch)
+  end
+
+  test "router connection preparation requires the exact defining framework origin", ctx do
+    compile!(
+      ctx,
+      source() <>
+        """
+        defmodule ArchitectureExample.Checkout.Router do
+          use Phoenix.Router
+        end
+        defmodule ArchitectureExample.Checkout.Impostor do
+          def prepare(conn), do: conn.script_name
+        end
+        """
+    )
+
+    assert [
+             %{
+               module: ArchitectureExample.Checkout.Impostor,
+               caller: {:prepare, 1},
+               dispatch: "conn.script_name"
+             }
+           ] = reasons(errors(), :dynamic_dispatch)
   end
 
   test "endpoint data reads require the defining framework origin", ctx do

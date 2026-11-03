@@ -199,6 +199,14 @@ defmodule DomainContract.Architecture.Beam do
     dispatch == ":erlang.apply(#{inspect(module)}, action, [conn, conn.params])"
   end
 
+  defp framework_reference?(
+         %{dynamic: :call, dispatch: "conn.script_name"},
+         {:prepare, 1},
+         Phoenix.Router,
+         _module
+       ),
+       do: true
+
   defp framework_reference?(_, _, _, _), do: false
 
   # A capture's AST contains a zero-argument call-shaped node. Do not also
