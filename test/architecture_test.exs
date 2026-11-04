@@ -385,6 +385,26 @@ defmodule DomainContract.ArchitectureTest do
     assert [%{reason: :unused_gateway}] = errors()
   end
 
+  test "a gateway naming a missing module fails as unused", ctx do
+    text =
+      gateway_source()
+      |> String.replace(
+        "module: ArchitectureExample.Checkout,",
+        "module: ArchitectureExample.Checkout.Missing,"
+      )
+      |> String.replace("def run(id), do: id.(1)", "def run(id), do: Stock.fetch(id)")
+
+    compile!(ctx, text)
+
+    assert [
+             %{
+               reason: :unused_gateway,
+               module: @checkout,
+               gateway: %{"module" => "Elixir.ArchitectureExample.Checkout.Missing"}
+             }
+           ] = errors()
+  end
+
   test "captured caller-context gateways do not invent a lexical dependency", ctx do
     dispatch = "DomainContract.invoke(nil, ArchitectureExample.Inventory, \"fetch\", id)"
 

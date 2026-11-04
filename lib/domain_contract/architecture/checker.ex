@@ -294,7 +294,7 @@ defmodule DomainContract.Architecture.Checker do
 
     for {owner, policy} <- policies,
         gateway <- policy.gateways,
-        module = by_name[gateway["module"]],
+        module <- [by_name[gateway["module"]]],
         owners[module] != owner or
           not Enum.any?(Map.get(references, module, []), &Gateway.matches?(gateway, module, &1)),
         do: diagnostic(owner, beams[owner].file, :unused_gateway, %{gateway: gateway})
