@@ -31,6 +31,7 @@ defmodule DomainContract.Architecture.Beam do
       __phoenix_component_verify__: 1,
       __phoenix_macro_components__: 0
     ],
+    Phoenix.VerifiedRoutes => [__phoenix_verify_routes__: 1],
     Phoenix.LiveView => [__live__: 0],
     Phoenix.LiveComponent => [__live__: 0]
   }
@@ -139,11 +140,13 @@ defmodule DomainContract.Architecture.Beam do
   end
 
   def references(beam) do
+    returns = DomainContract.Architecture.MapAccess.literal_returns(beam.definitions)
+
     beam.definitions
     |> Enum.reject(&internal?(&1, beam))
     |> Enum.flat_map(fn {signature, _, meta, clauses} ->
       Enum.flat_map(clauses, fn {clause_meta, args, guards, body} ->
-        body = DomainContract.Architecture.MapAccess.annotate(body, args, guards)
+        body = DomainContract.Architecture.MapAccess.annotate(body, args, guards, returns)
 
         walk([args, guards, body], [])
         |> Enum.reject(fn reference ->
