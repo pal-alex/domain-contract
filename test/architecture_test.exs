@@ -546,6 +546,85 @@ defmodule DomainContract.ArchitectureTest do
     assert Architecture.check_application(:architecture_example, strict: true) == :ok
   end
 
+  test "variable and wildcard struct patterns do not construct a struct", ctx do
+    compile!(
+      ctx,
+      String.replace(source(), "def run(id), do: Stock.fetch(id)", """
+      def run(%module{} = record) do
+        %_{} = local = record
+        from_case = case local do %^module{} = value -> value.id end
+        from_with = with %_{} = value <- local, do: value.id
+        from_for = for %_{} = value <- [local], do: value.id
+        from_fn = (fn %_{} = value -> value.id end).(local)
+        {module, record.id, from_case, from_with, from_for, from_fn}
+      end
+      """)
+    )
+
+    assert Architecture.check_application(:architecture_example, strict: true) == :ok
+    assert apply(@checkout, :run, [struct(@record, id: 7)]) == {@record, 7, 7, 7, [7], 7}
+  end
+
+  test "dynamic struct constructors stay checked on pattern right hand sides", ctx do
+    compile!(
+      ctx,
+      String.replace(source(), "def run(id), do: Stock.fetch(id)", """
+      def run(id) do
+        %_{} = first = struct(id, [])
+        case struct!(id, []) do
+          %_{} = second -> {first.id, second.id}
+        end
+      end
+      """)
+    )
+
+    assert Enum.sort(Enum.map(reasons(errors(), :dynamic_dispatch), &{&1.dynamic, &1.dispatch})) ==
+             [{:struct, "Kernel.struct!(id, [])"}, {:struct, "Kernel.struct(id, [])"}]
+  end
+
+  test "rescue binds exception maps without proving catch or outer variables", ctx do
+    compile!(
+      ctx,
+      String.replace(source(), "def run(id), do: Stock.fetch(id)", """
+      def run(err) do
+        try do
+          raise "failure"
+        rescue
+          err in RuntimeError -> err.message
+        catch
+          :throw, err -> err.caught
+        after
+          _ = err.outside
+        end
+        err.after_try
+      end
+      """)
+    )
+
+    assert Enum.sort(Enum.map(reasons(errors(), :dynamic_dispatch), & &1.dispatch)) ==
+             ["err.after_try", "err.caught", "err.outside"]
+  end
+
+  test "generic rescue normalizes Erlang errors and rebindings lose their proof", ctx do
+    compile!(
+      ctx,
+      String.replace(source(), "def run(id), do: Stock.fetch(id)", """
+      def run(id) do
+        try do
+          :erlang.error(:failure)
+        rescue
+          err ->
+            _ = err.__struct__
+            err = id
+            err.rebound
+        end
+      end
+      """)
+    )
+
+    assert [%{dispatch: "err.rebound"}] = reasons(errors(), :dynamic_dispatch)
+  end
+
   test "struct construction and patterns need the owner's exported record", ctx do
     text =
       String.replace(
@@ -815,6 +894,125 @@ defmodule DomainContract.ArchitectureTest do
 
     assert Enum.sort(Enum.map(reasons(errors(), :dynamic_dispatch), & &1.dispatch)) ==
              ["assigns.field", "assigns.rebound", "module.field"]
+  end
+
+  test "a map assertion outside expanded HEEx preserves change tracking", ctx do
+    compile!(
+      ctx,
+      source() <>
+        ~S"""
+        defmodule ArchitectureExample.Checkout.HEEx do
+          defmacro sigil_H(template, modifiers) do
+            rendered =
+              quote do
+                Phoenix.Component.sigil_H(unquote(template), unquote(modifiers))
+              end
+              |> Macro.expand_once(__CALLER__)
+
+            quote do
+              %{} = var!(assigns)
+              unquote(rendered)
+            end
+          end
+        end
+        defmodule ArchitectureExample.Checkout.View do
+          use Phoenix.Component
+          import Phoenix.Component, except: [sigil_H: 2]
+          import ArchitectureExample.Checkout.HEEx, only: [sigil_H: 2]
+          def render(assigns), do: ~H"<span>{@value}</span>"
+          def nested(assigns), do: ~H"<.frame><span>{@value}</span></.frame>"
+          slot :inner_block
+          defp frame(assigns), do: ~H"<div>{render_slot(@inner_block)}</div>"
+        end
+        """
+    )
+
+    assert Architecture.check_application(:architecture_example, strict: true) == :ok
+
+    for function <- [:render, :nested] do
+      unchanged =
+        apply(ArchitectureExample.Checkout.View, function, [%{__changed__: %{}, value: "visible"}])
+
+      assert unchanged.dynamic.(true) == [nil]
+      refute unchanged.dynamic.(false) == [nil]
+
+      changed =
+        apply(ArchitectureExample.Checkout.View, function, [
+          %{__changed__: %{value: true}, value: "visible"}
+        ])
+
+      refute changed.dynamic.(true) == [nil]
+    end
+  end
+
+  test "HEEx entry guards and Phoenix assign results preserve change tracking", ctx do
+    compile!(
+      ctx,
+      source() <>
+        ~S"""
+        defmodule ArchitectureExample.Checkout.View do
+          use Phoenix.Component
+          def guarded(assigns) when is_map(assigns) do
+            assigns = assign(assigns, [])
+            ~H"<span>{@value}</span>"
+          end
+          def assigned(assigns) do
+            assigns = assign(assigns, :value, Map.fetch!(assigns, :value))
+            ~H"<span>{@value}</span>"
+          end
+          def lazy(assigns) do
+            assigns = assign_new(assigns, :value, fn -> "fallback" end)
+            ~H"<span>{@value}</span>"
+          end
+          def updated(assigns) do
+            assigns = update(assigns, :value, fn value -> value end)
+            ~H"<span>{@value}</span>"
+          end
+        end
+        """
+    )
+
+    assert Architecture.check_application(:architecture_example, strict: true) == :ok
+
+    for function <- [:guarded, :assigned, :lazy, :updated] do
+      unchanged =
+        apply(ArchitectureExample.Checkout.View, function, [%{__changed__: %{}, value: "visible"}])
+
+      assert unchanged.dynamic.(true) == [nil]
+      assert unchanged.dynamic.(false) == ["visible"]
+
+      changed =
+        apply(ArchitectureExample.Checkout.View, function, [
+          %{__changed__: %{value: true}, value: "visible"}
+        ])
+
+      assert changed.dynamic.(true) == ["visible"]
+    end
+  end
+
+  test "empty assign/2 and overwritten nested fields cannot invent map proofs", ctx do
+    compile!(
+      ctx,
+      source() <>
+        ~S"""
+        defmodule ArchitectureExample.Checkout.View do
+          use Phoenix.Component
+          def empty(assigns) do
+            assigns = assign(assigns, [])
+            ~H"<span>{@field}</span>"
+          end
+          def nested(%{value: %{}} = assigns, module) do
+            assigns = assign(assigns, :value, module)
+            assigns.value.field
+          end
+        end
+        """
+    )
+
+    assert Phoenix.Component.assign(@inventory, []) == @inventory
+
+    assert Enum.sort(Enum.map(reasons(errors(), :dynamic_dispatch), & &1.dispatch)) ==
+             ["assigns.field", "assigns.value.field"]
   end
 
   test "verified routes metadata requires the exact macro provenance", ctx do

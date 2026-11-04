@@ -148,7 +148,7 @@ defmodule DomainContract.Architecture.Beam do
       Enum.flat_map(clauses, fn {clause_meta, args, guards, body} ->
         body = DomainContract.Architecture.MapAccess.annotate(body, args, guards, returns)
 
-        walk([args, guards, body], [])
+        walk(body, walk(guards, walk_pattern(args, [])))
         |> Enum.reject(fn reference ->
           meta[:context] == clause_meta[:context] and
             framework_reference?(reference, signature, meta[:context], beam.module)
@@ -211,6 +211,19 @@ defmodule DomainContract.Architecture.Beam do
        do: true
 
   defp framework_reference?(_, _, _, _), do: false
+
+  defp walk({operator, _, [pattern, expression]}, refs) when operator in [:=, :<-],
+    do: walk(expression, walk_pattern(pattern, refs))
+
+  # Clause heads are patterns, except for cond's evaluated conditions.
+  defp walk({:cond, _, [[do: clauses]]}, refs) do
+    Enum.reduce(clauses, refs, fn {:->, _, [conditions, body]}, refs ->
+      walk(body, walk(conditions, refs))
+    end)
+  end
+
+  defp walk({:->, _, [patterns, body]}, refs),
+    do: walk(body, walk_pattern(patterns, refs))
 
   # A capture's AST contains a zero-argument call-shaped node. Do not also
   # count that node as /0; the capture's declared arity is the reference.
@@ -323,6 +336,31 @@ defmodule DomainContract.Architecture.Beam do
   defp walk(tuple, refs) when is_tuple(tuple), do: walk(Tuple.to_list(tuple), refs)
   defp walk(list, refs) when is_list(list), do: Enum.reduce(list, refs, &walk/2)
   defp walk(_, refs), do: refs
+
+  # %module{} and %_{} only match __struct__ in a pattern; they never
+  # dispatch to that module. A named struct still declares a type dependency.
+  defp walk_pattern({:%, meta, [module, fields]} = node, refs) do
+    refs =
+      if is_atom(module),
+        do: reference(module, :__struct__, 0, meta, :struct, refs, node),
+        else: refs
+
+    walk_pattern(fields, refs)
+  end
+
+  defp walk_pattern({:when, _, args}, refs) do
+    {patterns, [guard]} = Enum.split(args, -1)
+    walk(guard, walk_pattern(patterns, refs))
+  end
+
+  defp walk_pattern({:^, _, [expression]}, refs), do: walk(expression, refs)
+  defp walk_pattern({{:., _, _}, _, _} = call, refs), do: walk(call, refs)
+
+  defp walk_pattern(tuple, refs) when is_tuple(tuple),
+    do: walk_pattern(Tuple.to_list(tuple), refs)
+
+  defp walk_pattern(list, refs) when is_list(list), do: Enum.reduce(list, refs, &walk_pattern/2)
+  defp walk_pattern(_, refs), do: refs
 
   defp literal_list?(list) when is_list(list),
     do: not Enum.any?(list, &match?({:|, _, _}, &1))

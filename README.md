@@ -313,12 +313,23 @@ patterns and successful `case`, `with` and comprehension branches. They do not
 escape those branches or reach earlier expressions. Local functions whose every
 clause returns a literal map also provide a result shape; their bodies and calls
 are still audited. Unknown function results and unknown nested fields stay dynamic.
+Rescue bindings are exception maps; catch reasons remain untyped. `%module{}` and
+`%_{}` in patterns match data without dynamic construction. Named struct patterns
+still declare type dependencies, and dynamic `struct/2` and `struct!/2` stay checked.
 
 HEEx slot rebindings through `Phoenix.LiveView.TagEngine.__assigns__/3` preserve an
 existing map proof. Untyped `assigns`, `render/1`, `generated: true`, and a generated
 `case assigns` with a non-map fallback do not establish one. The checker only
 annotates its in-memory audit AST; it does not rewrite templates or change LiveView
 change tracking.
+
+The exact `Phoenix.Component.assign/3`, `assign_new/3` and `update/3` APIs return
+maps or sockets on success. Their results prove a map, but do not preserve nested
+field shapes. `assign/2` only preserves an existing map proof: an empty enumerable
+can return its input unchanged. A function-head `is_map(assigns)` guard or a map
+assertion outside the expanded HEEx AST can establish the template input proof
+without tainting Phoenix's expression analysis. An assertion inside a template
+expression can affect change tracking and should not be used for this purpose.
 
 For a real runtime callback port, declare only its reviewed invocation:
 

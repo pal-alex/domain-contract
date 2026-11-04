@@ -54,6 +54,31 @@ defmodule DomainContract.Architecture.MapAccess do
     {:->, meta, [walk(args, known, returns), walk(body, scoped, returns)]}
   end
 
+  # Elixir normalizes rescued errors into exception structs. Catch reasons,
+  # try/else values and variables outside this rescue clause have no such proof.
+  defp walk({:try, meta, [options]}, known, returns) do
+    options =
+      Enum.map(options, fn
+        {:rescue, clauses} ->
+          {:rescue,
+           Enum.map(clauses, fn {:->, meta, [[pattern], body]} ->
+             exception =
+               case pattern do
+                 {:in, _, [exception, _]} -> exception
+                 exception -> exception
+               end
+
+             scoped = constrain(exception, {:map, %{}}, known)
+             {:->, meta, [[pattern], walk(body, scoped, returns)]}
+           end)}
+
+        {key, body} ->
+          {key, walk(body, known, returns)}
+      end)
+
+    {:try, meta, [options]}
+  end
+
   defp walk({kind, meta, args}, known, returns) when kind in [:with, :for] and is_list(args) do
     {qualifiers, [options]} = Enum.split(args, -1)
 
@@ -201,6 +226,17 @@ defmodule DomainContract.Architecture.MapAccess do
       {:map, fields} -> {:map, Map.delete(fields, :__changed__)}
       _ -> nil
     end
+  end
+
+  # These exact Phoenix APIs return a socket/map or raise. Do not carry nested
+  # field shapes through mutations. assign/2 can return an arbitrary input for
+  # an empty enumerable, so it needs a pre-existing proof unlike assign/3.
+  defp shape({{:., _, [Phoenix.Component, name]}, _, [_, _, _]}, _, _)
+       when name in [:assign, :assign_new, :update],
+       do: {:map, %{}}
+
+  defp shape({{:., _, [Phoenix.Component, :assign]}, _, [input, _]}, known, returns) do
+    if match?({:map, _}, shape(input, known, returns)), do: {:map, %{}}
   end
 
   defp shape({name, _, args}, _, returns) when is_atom(name) and is_list(args),
