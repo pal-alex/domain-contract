@@ -2,7 +2,7 @@ defmodule DomainContract.Artifact do
   @moduledoc "Validates canonical metadata and inspects BEAM attributes without loading code."
   alias DomainContract.Info
 
-  @primitives ~w(string integer float boolean datetime map opaque json_scalar null atom any list global)
+  @primitives ~w(string binary integer float boolean datetime json json_scalar null atom never)
   def from_beam(beam) when is_binary(beam) do
     with {:ok, {module, chunks}} <- :beam_lib.chunks(beam, [:attributes, :exports]) do
       case Keyword.get_values(chunks[:attributes], :domain_contract_artifact) do
@@ -120,17 +120,47 @@ defmodule DomainContract.Artifact do
       definition = DomainContract.Schemas.definition(c)
 
       once(:definition, definition, fn -> definition?(definition) end) and
-        schemas?(c) and references?(c) and
+        envelope?(c) and schemas?(c) and references?(c) and
         (not Map.has_key?(c, "digest") or c["digest"] == DomainContract.Reference.digest(c))
     end)
   end
 
+  defp envelope?(c) do
+    (not Map.has_key?(c, "metadata") or is_map(c["metadata"])) and
+      Enum.all?(~w(responsibility description), fn key ->
+        not Map.has_key?(c, key) or is_nil(c[key]) or is_binary(c[key])
+      end)
+  end
+
+  @doc "Lists invalid boundary type declarations for compiler diagnostics."
+  def invalid_types(source) do
+    c = Info.canonical(source)
+    names = Enum.map(c["entities"], & &1["name"])
+
+    fields =
+      for entity <- c["entities"],
+          field <- entity["fields"],
+          do: {"entity.#{entity["name"]}.#{field["name"]}", field["type"]}
+
+    operations =
+      for op <- c["operations"],
+          side <- ~w(input output error),
+          type = op[side <> "_type"] || ["entity", op[side]],
+          do: {"operation.#{op["name"]}.#{side}", type}
+
+    messages =
+      for surface <- ~w(commands notifications props),
+          item <- c[surface],
+          do: {"#{surface}.#{item["name"]}", item["payload"] || item["type"]}
+
+    Enum.reject(fields ++ operations ++ messages, fn {_, type} -> type?(type, names) end)
+  end
+
   defp definition?(c) do
-    c["format_version"] == 8 and not Map.has_key?(c, "schema") and is_binary(c["module"]) and
+    c["format_version"] == 9 and not Map.has_key?(c, "schema") and is_binary(c["module"]) and
       String.starts_with?(c["module"], "Elixir.") and
       is_integer(c["version"]) and c["version"] > 0 and c["kind"] in ~w(domain ui) and
-      is_binary(c["responsibility"]) and String.trim(c["responsibility"]) != "" and
-      is_map(c["metadata"]) and schema?(c)
+      schema?(c)
   end
 
   defp schemas?(c) do
@@ -181,7 +211,8 @@ defmodule DomainContract.Artifact do
 
     unique?(c["entities"], "name") and
       Enum.all?(c["entities"], fn entity ->
-        is_binary(entity["name"]) and unique?(entity["fields"], "name") and
+        is_binary(entity["name"]) and entity["keys"] in ~w(atoms strings) and
+          unique?(entity["fields"], "name") and
           Enum.all?(entity["fields"], fn field ->
             is_binary(field["name"]) and is_boolean(field["optional"]) and
               type?(field["type"], names)
@@ -189,7 +220,7 @@ defmodule DomainContract.Artifact do
       end) and unique?(c["operations"], "name") and
       Enum.all?(c["operations"], fn op ->
         is_binary(op["name"]) and is_boolean(op["optional_output"]) and root?(op, "input", names) and
-          root?(op, "output", names)
+          root?(op, "output", names) and type?(op["error_type"], names)
       end) and
       Enum.all?(["commands", "notifications"], fn key ->
         unique?(c[key], "name") and
@@ -209,10 +240,13 @@ defmodule DomainContract.Artifact do
 
   def type?(type, _) when type in @primitives, do: true
 
-  def type?(["struct", module], _names) when is_binary(module),
-    do: String.starts_with?(module, "Elixir.")
+  def type?(["struct", module, ["map", "atoms", _] = fields], names) when is_binary(module),
+    do: String.starts_with?(module, "Elixir.") and type?(fields, names)
 
-  def type?([kind, name], names) when kind in ~w(entity open_entity), do: name in names
+  def type?(["struct", module, ["entity", name]], names) when is_binary(module),
+    do: String.starts_with?(module, "Elixir.") and name in names
+
+  def type?([kind, name], names) when kind in ~w(entity), do: name in names
   def type?([kind, type], names) when kind in ~w(list dictionary nullable), do: type?(type, names)
 
   def type?(["enum", values], _) when is_list(values),
@@ -226,7 +260,10 @@ defmodule DomainContract.Artifact do
       map_size(choices) > 0 and
         Enum.all?(choices, fn {tag, t} -> is_binary(tag) and type?(t, names) end)
 
-  def type?(fields, names) when is_map(fields),
+  def type?(["tuple", types], names) when is_list(types),
+    do: Enum.all?(types, &type?(&1, names))
+
+  def type?(["map", mode, fields], names) when mode in ~w(atoms strings) and is_map(fields),
     do: Enum.all?(fields, fn {key, t} -> is_binary(key) and type?(t, names) end)
 
   def type?(_, _), do: false

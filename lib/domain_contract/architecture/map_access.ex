@@ -65,8 +65,8 @@ defmodule DomainContract.Architecture.MapAccess do
   defp annotate(value, _), do: value
 
   defp patterns({:=, _, [left, right]}) do
-    values = if map?(left), do: [variable(right)], else: []
-    values = if map?(right), do: [variable(left) | values], else: values
+    values = if map?(left), do: bindings(right), else: []
+    values = if map?(right), do: bindings(left) ++ values, else: values
     MapSet.union(MapSet.new(Enum.reject(values, &is_nil/1)), patterns([left, right]))
   end
 
@@ -79,6 +79,9 @@ defmodule DomainContract.Architecture.MapAccess do
     do: Enum.reduce(list, MapSet.new(), &MapSet.union(patterns(&1), &2))
 
   defp patterns(_), do: MapSet.new()
+
+  defp bindings({:=, _, [left, right]}), do: bindings(left) ++ bindings(right)
+  defp bindings(value), do: [variable(value)]
 
   defp pattern_guards([{:when, _, args}]), do: guard(List.last(args))
   defp pattern_guards(_), do: MapSet.new()

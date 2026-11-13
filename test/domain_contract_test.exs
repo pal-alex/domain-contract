@@ -15,6 +15,8 @@ defmodule DomainContractTest do
       responsibility("Owns echo and its validation.")
 
       operation :echo do
+        error_type({:enum, [:unavailable]})
+
         input_entity :request do
           field(:text, :string)
           field(:optional, :integer, optional: true)
@@ -40,11 +42,40 @@ defmodule DomainContractTest do
     contract do
       version(1)
       responsibility("Owns an echo client.")
-      consumes(Echo)
+      consumes(Echo, only: [:echo])
     end
 
     def run(input), do: DomainContract.call(Echo, :echo, input)
     def explicit(context, input), do: DomainContract.invoke(context, Echo, :echo, input)
+  end
+
+  defmodule Relay do
+    use DomainContract
+
+    contract do
+      version(1)
+      responsibility("Owns a nested echo operation.")
+      consumes(Echo, only: [:echo])
+
+      operation :relay do
+        input_type(%{text: :string})
+        output_type(:string)
+      end
+    end
+
+    def call("relay", input, _context), do: DomainContract.call(Echo, :echo, input)
+  end
+
+  defmodule NestedClient do
+    use DomainContract
+
+    contract do
+      version(1)
+      responsibility("Owns a caller of the relay.")
+      consumes(Relay, only: [:relay])
+    end
+
+    def run(input), do: DomainContract.call!(Relay, :relay, input)
   end
 
   setup do
@@ -55,6 +86,8 @@ defmodule DomainContractTest do
           Enum.map(
             [
               Echo,
+              Relay,
+              NestedClient,
               Client,
               DomainContractTest.Stranger,
               DomainContractTest.Editor,
@@ -162,7 +195,11 @@ defmodule DomainContractTest do
 
   defmodule Editor do
     use Phoenix.Component
-    use DomainContract.UI, entry: :html, prop_modes: [editable?: :controlled]
+
+    use DomainContract.UI,
+      entry: :html,
+      prop_modes: [editable?: :controlled],
+      prop_types: [source: %{}]
 
     contract do
       version(1)
@@ -185,7 +222,7 @@ defmodule DomainContractTest do
     contract do
       version(1)
       responsibility("Owns the active editing page.")
-      consumes(Editor)
+      consumes(Editor, only: [:close])
     end
 
     def close(id), do: DomainContract.UI.command({Editor, id}, :close, %{})
@@ -216,7 +253,10 @@ defmodule DomainContractTest do
 
     assert schema == DomainContract.Schemas.id(snapshot)
     assert module == Atom.to_string(Echo)
-    assert snapshot["operations"] == Echo.__contract__()["operations"]
+
+    assert snapshot["operations"] ==
+             DomainContract.Schemas.definition(Echo.__contract__())["operations"]
+
     refute Map.has_key?(hd(Client.__contract__()["consumes"]), "version")
     refute function_exported?(DomainContract, :call, 4)
     assert Compatibility.check([Echo, Client]) == :ok
@@ -226,7 +266,7 @@ defmodule DomainContractTest do
 
   test "local calls preserve values, enforce dependencies and hook ownership" do
     assert Client.run(%{text: "hi"}) == {:ok, "hi"}
-    assert Client.Helper.run(%{"text" => "helper"}) == {:ok, "helper"}
+    assert Client.Helper.run(%{text: "helper"}) == {:ok, "helper"}
     assert Stranger.run() == {:error, {:invalid_contract, :undeclared_dependency}}
     assert {:error, _} = Client.run(%{text: 2})
     assert Runtime.input(Echo, :absent, %{}) == {:error, {:invalid_contract, :invalid_operation}}
@@ -236,7 +276,7 @@ defmodule DomainContractTest do
     module = Module.concat(__MODULE__, "SelfOwner#{System.unique_integer([:positive])}")
 
     Code.compile_string(
-      "defmodule #{inspect(module)} do use DomainContract; contract do version 1; responsibility \"Owns a self-scoped request.\"; consumes __MODULE__; operation :echo, input_type: :string, output_type: :string end; def call(\"echo\", input, _), do: {:ok, input} end"
+      "defmodule #{inspect(module)} do use DomainContract; contract do version 1; responsibility \"Owns a self-scoped request.\"; consumes __MODULE__, only: [:echo]; operation :echo, input_type: :string, output_type: :string end; def call(\"echo\", input, _), do: {:ok, input} end"
     )
 
     [reference] = module.__contract__()["consumes"]
@@ -287,6 +327,8 @@ defmodule DomainContractTest do
 
     try do
       assert DomainContract.Reference.resolve(Echo)["version"] == 73
+      File.write!(path, Info.json(Map.put(altered, "version", 74)))
+      assert DomainContract.Reference.resolve(Echo)["version"] == 74
       assert Client.run(%{text: "captured"}) == {:ok, "captured"}
     after
       Application.put_env(:domain_contract, :metadata_paths, previous)
@@ -317,10 +359,32 @@ defmodule DomainContractTest do
              {:ok, "hi adapted"}
   end
 
-  test "successful outputs are checked and provider errors pass through" do
+  test "nested operations enter their owner's captured requirements and restore the caller" do
+    assert NestedClient.run(%{text: "local"}) == "local"
+    binding = Context.new(NestedClient, :trusted)
+
+    for context <- [binding, %{domain_contract: binding, source: %{user: 7, execution: "kept"}}] do
+      DomainContract.with_context(context, fn ->
+        assert NestedClient.run(%{text: "nested"}) in ["nested", "nested adapted"]
+        assert Context.current() == context
+
+        assert {:error, {:invalid_contract, :undeclared_dependency}} =
+                 DomainContract.invoke(context, Echo, :echo, %{text: "forbidden"})
+      end)
+
+      assert Context.current() == nil
+    end
+
+    assert_raise RuntimeError, ~r/domain operation failed/, fn ->
+      NestedClient.run(%{text: 42})
+    end
+  end
+
+  test "successful outputs and declared errors are checked" do
     for {result, expected} <- [
           {{:ok, 42}, :invalid},
           {{:error, :unavailable}, {:error, :unavailable}},
+          {{:error, :undeclared}, :invalid},
           {:bad, :invalid}
         ] do
       context = %{domain_contract: Context.new(Client, :trusted), result: result}
@@ -430,7 +494,6 @@ defmodule DomainContractTest do
     assert Compatibility.subset?(["entity", "x"], ["entity", "x"], old, optional)
     refute Compatibility.subset?(["entity", "x"], ["entity", "x"], old, required)
     refute Compatibility.subset?(["entity", "x"], ["entity", "x"], optional, old)
-    assert Compatibility.subset?(["entity", "x"], ["open_entity", "x"], optional, old)
   end
 
   test "Phoenix props have a single native declaration and independent subscriptions" do
@@ -653,7 +716,7 @@ defmodule DomainContractTest do
         contract do
           version 1
           responsibility "Owns an offline consumer."
-          consumes #{inspect(module)}
+          consumes #{inspect(module)}, only: [:echo]
         end
       end
       """)
@@ -680,7 +743,7 @@ defmodule DomainContractTest do
   test "compiler rejects undeclared literal calls and missing public operations" do
     for {dependencies, operation, reason} <- [
           {"", ":echo", ~r/undeclared dependency/},
-          {"consumes #{inspect(Echo)}", ":missing", ~r/undeclared operations/}
+          {"consumes #{inspect(Echo)}, only: [:echo]", ":missing", ~r/undeclared operations/}
         ] do
       assert_raise CompileError, reason, fn ->
         Code.compile_string("""

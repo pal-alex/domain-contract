@@ -26,7 +26,7 @@ defmodule DomainContract.SchemaLifecycleTest do
     contract do
       version(1)
       responsibility("Calls the selected shared interface.")
-      consumes(Owner)
+      consumes(Owner, only: [:echo])
     end
 
     def local_echo(value), do: DomainContract.call(Owner, :echo, %{description: value})
@@ -38,7 +38,7 @@ defmodule DomainContract.SchemaLifecycleTest do
     contract do
       version(1)
       responsibility("Composes a consumer without copying its transitive schema graph.")
-      consumes(Consumer)
+      consumes(Consumer, only: [])
     end
   end
 
@@ -58,7 +58,7 @@ defmodule DomainContract.SchemaLifecycleTest do
       version(1)
       responsibility("Owns a plain local self-dependency.")
       operation(:echo, input_type: :string, output_type: :string)
-      consumes(__MODULE__)
+      consumes(__MODULE__, only: [:echo])
     end
 
     def call("echo", value, _), do: {:ok, value}
@@ -83,7 +83,7 @@ defmodule DomainContract.SchemaLifecycleTest do
     contract do
       version(1)
       responsibility("Calls an optional local owner using independent requirements.")
-      consumes(OptionalOwner, optional: true)
+      consumes(OptionalOwner, only: [:echo], optional: true)
     end
 
     def echo(value), do: DomainContract.call(OptionalOwner, :echo, value)

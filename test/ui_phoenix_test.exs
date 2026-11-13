@@ -44,7 +44,7 @@ defmodule DomainContract.UIPhoenixTest do
     contract do
       version(1)
       responsibility("Owns an active pair of counters and their notification projection.")
-      consumes(Counter)
+      consumes(Counter, only: [:increment])
       subscribe(Counter, :changed)
     end
 

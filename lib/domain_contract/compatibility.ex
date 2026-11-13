@@ -58,7 +58,7 @@ defmodule DomainContract.Compatibility do
       {:error, [%{reason: :different_module}]}
     else
       errors =
-        operations(provider, requirements, "operations", [:input, :output]) ++
+        operations(provider, requirements, "operations", [:input, :output, :error]) ++
           operations(provider, requirements, "commands", [:payload]) ++
           operations(provider, requirements, "notifications", [:notification]) ++
           props(provider, requirements) ++ slots(provider, requirements)
@@ -201,7 +201,7 @@ defmodule DomainContract.Compatibility do
         MapSet.new()
       )
 
-  defp subset(_, top, _, _, _) when top in ["opaque", "any"], do: true
+  defp subset("never", _, _, _, _), do: true
 
   defp subset(["nullable", t], right, le, re, seen),
     do: subset(["union", ["null", t]], right, le, re, seen)
@@ -221,9 +221,40 @@ defmodule DomainContract.Compatibility do
   defp subset(["enum", values], right, _, _, _),
     do: Enum.all?(values, &enum_accepted?(&1, right))
 
-  defp subset(["struct", name], ["struct", name], _, _, _), do: true
-  defp subset(["struct", _], "map", _, _, _), do: true
+  defp subset(["struct", name, l], ["struct", name, r], le, re, seen),
+    do: subset(l, r, le, re, seen)
+
+  defp subset(["tuple", l], ["tuple", r], le, re, seen),
+    do:
+      length(l) == length(r) and
+        Enum.all?(Enum.zip(l, r), fn {a, b} -> subset(a, b, le, re, seen) end)
+
   defp subset("integer", "float", _, _, _), do: true
+  defp subset("string", "binary", _, _, _), do: true
+
+  defp subset(type, "json", _, _, _)
+       when type in ~w(string integer float boolean null json_scalar),
+       do: true
+
+  defp subset([kind, type], "json", le, re, seen) when kind in ~w(list dictionary),
+    do: subset(type, "json", le, re, seen)
+
+  defp subset(["map", "strings", fields], "json", le, re, seen),
+    do: Enum.all?(fields, fn {_, type} -> subset(type, "json", le, re, seen) end)
+
+  defp subset(["variant", choices], "json", le, re, seen),
+    do: Enum.all?(choices, fn {_, type} -> subset(type, "json", le, re, seen) end)
+
+  defp subset(["entity", name], "json", le, re, seen) do
+    key = {name, "json"}
+
+    le[name]["keys"] == "strings" and
+      (MapSet.member?(seen, key) or
+         Enum.all?(
+           le[name]["fields"],
+           &subset(&1["type"], "json", le, re, MapSet.put(seen, key))
+         ))
+  end
 
   defp subset(left, "json_scalar", _, _, _) when left in ~w(string integer float boolean null),
     do: true
@@ -238,21 +269,25 @@ defmodule DomainContract.Compatibility do
        when lk in ~w(entity open_entity) and rk in ~w(entity open_entity) do
     key = {lk, ln, rk, rn}
 
-    if MapSet.member?(seen, key),
-      do: true,
-      else:
-        object_subset?(
-          le[ln]["fields"],
-          re[rn]["fields"],
-          le,
-          re,
-          lk == "open_entity",
-          rk == "open_entity",
-          MapSet.put(seen, key)
-        )
+    if le[ln]["keys"] != re[rn]["keys"] do
+      false
+    else
+      if MapSet.member?(seen, key),
+        do: true,
+        else:
+          object_subset?(
+            le[ln]["fields"],
+            re[rn]["fields"],
+            le,
+            re,
+            lk == "open_entity",
+            rk == "open_entity",
+            MapSet.put(seen, key)
+          )
+    end
   end
 
-  defp subset(left, right, le, re, seen) when is_map(left) and is_map(right) do
+  defp subset(["map", mode, left], ["map", mode, right], le, re, seen) do
     fields = fn map ->
       Enum.map(map, fn {k, v} -> %{"name" => k, "type" => v, "optional" => false} end)
     end

@@ -44,7 +44,7 @@ defmodule DomainContract.Info do
          DomainContract.Schemas.definition(reference.definition)}
       end)
     )
-    |> Map.put(:format_version, 8)
+    |> Map.put(:format_version, 9)
     |> canonical()
     |> then(fn artifact ->
       Map.update!(artifact, "schemas", &Map.delete(&1, DomainContract.Schemas.id(artifact)))
@@ -53,19 +53,30 @@ defmodule DomainContract.Info do
   end
 
   def canonical(module) when is_atom(module), do: contract(module)
-  def canonical(%{"format_version" => 8} = map), do: map
+  def canonical(%{"format_version" => 9} = map), do: map
   def canonical(map), do: map |> encode() |> Jason.decode!()
   def normalize(map), do: map |> encode() |> Jason.decode!()
+  @doc "Encodes a declared boundary type without losing its map-key representation."
+  def type(type), do: type |> DomainContract.Type.encode() |> normalize()
+
   def json(source), do: source |> canonical() |> encode()
   def encode(value), do: value |> ordered() |> Jason.encode!(pretty: true)
-  defp named(items), do: items |> Enum.map(&plain/1) |> Enum.sort_by(& &1.name)
+
+  defp named(items),
+    do: items |> Enum.map(&plain/1) |> Enum.sort_by(&to_string(Map.get(&1, :name, &1["name"])))
 
   defp plain(%_{} = struct),
     do:
       struct
       |> Map.from_struct()
       |> Map.drop([:__spark_metadata__, :module, :definition, :inputs, :outputs])
-      |> Map.new(fn {k, v} -> {k, plain(v)} end)
+      |> Map.new(fn {k, v} ->
+        {k,
+         if(k in [:type, :input_type, :output_type, :error_type, :payload],
+           do: DomainContract.Type.encode(v),
+           else: plain(v)
+         )}
+      end)
 
   defp plain(map) when is_map(map), do: Map.new(map, fn {k, v} -> {k, plain(v)} end)
   defp plain(list) when is_list(list), do: Enum.map(list, &plain/1)

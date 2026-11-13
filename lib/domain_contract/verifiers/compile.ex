@@ -25,12 +25,7 @@ defmodule DomainContract.Verifiers.Compile do
           &(is_struct(&1, Entity) or
               match?(%DomainContract.DeclarationReference{kind: :entities}, &1))
         ),
-      operations:
-        Enum.filter(
-          items,
-          &(is_struct(&1, Operation) or
-              match?(%DomainContract.DeclarationReference{kind: :operations}, &1))
-        ),
+      operations: Enum.filter(items, &is_struct(&1, Operation)),
       consumes: Enum.filter(items, &is_struct(&1, Reference)),
       subscriptions:
         Enum.filter(items, &match?(%Message{module: module} when not is_nil(module), &1)),
@@ -50,20 +45,31 @@ defmodule DomainContract.Verifiers.Compile do
       owner
       | consumes:
           Enum.map(owner.consumes, fn ref ->
-            %{ref | definition: resolve.(ref.module)}
+            %{ref | definition: DomainContract.Schemas.select(resolve.(ref.module), ref.only)}
           end),
         subscriptions:
           Enum.map(owner.subscriptions, fn ref ->
-            provider = resolve.(ref.module)
-
-            event =
-              Enum.find(provider["notifications"], &(&1["name"] == to_string(ref.name))) ||
-                raise ArgumentError, "unknown notification #{inspect(ref.module)}.#{ref.name}"
-
-            _ = event
-            %{ref | definition: provider}
+            %{
+              ref
+              | definition: DomainContract.Schemas.notification(resolve.(ref.module), ref.name)
+            }
           end)
     }
+
+    sources =
+      items
+      |> Enum.filter(
+        &(is_struct(&1, Reference) or
+            is_struct(&1, DomainContract.DeclarationReference) or
+            match?(%Message{module: module} when not is_nil(module), &1))
+      )
+      |> Enum.flat_map(&Reference.sources(&1.module))
+      |> Enum.uniq()
+
+    dsl =
+      Enum.reduce(sources, dsl, fn path, dsl ->
+        Transformer.eval(dsl, [], quote(do: @external_resource(unquote(path))))
+      end)
 
     artifact = DomainContract.Info.contract(owner)
 
@@ -72,7 +78,8 @@ defmodule DomainContract.Verifiers.Compile do
         :ok
 
       error ->
-        raise ArgumentError, "invalid inline contract #{inspect(owner.module)}: #{inspect(error)}"
+        raise ArgumentError,
+              "invalid inline contract #{inspect(owner.module)}: #{inspect(error)} #{inspect(DomainContract.Artifact.invalid_types(artifact))}"
     end
 
     {:ok,

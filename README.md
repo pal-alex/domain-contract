@@ -1,7 +1,7 @@
 # DomainContract
 
 A public Elixir module owns one inline contract. Its identity is its module name.
-A consumer names the module and captures compiled requirements automatically.
+A consumer names the module and the operations it needs, capturing their compiled schemas.
 Version numbers and digests identify history; directional structural checks decide
 replacement compatibility. Responsibility and description changes require review:
 compilation cannot prove behavioral equivalence or semantic cohesion.
@@ -22,7 +22,7 @@ defmodule MyApp.Items do
     end
   end
 
-  def call("get", %{"id" => id}, context), do: MyApp.Items.Persistence.get(id, context)
+  def call("get", %{id: id}, context), do: MyApp.Items.Persistence.get(id, context)
 end
 
 defmodule MyApp.Checkout do
@@ -31,15 +31,20 @@ defmodule MyApp.Checkout do
   contract do
     version 1
     responsibility "Owns checkout orchestration."
-    consumes MyApp.Items
+    consumes MyApp.Items, only: [:get]
   end
 
   def lookup(id), do: DomainContract.call(MyApp.Items, :get, %{id: id})
 end
 ```
 
-Calls validate declared dependencies, operation inputs and successful outputs.
-Application errors pass through unchanged. Local calls execute the public owner's
+Calls validate declared dependencies, operation inputs, successful outputs and
+application errors. Declare `error_type` for every expected failure; its default
+`:never` means the operation cannot return an application error. Framework invocation
+failures remain separate from the provider error schema. An entry adapter raises
+`DomainContract.InvocationError` when delivery or owner-context admission fails;
+Runtime returns its reason as `{:error, reason}`. Business failures must use the
+declared error schema. Local calls execute the public owner's
 `call/3`. Plain local calls validate the inline captured requirements without
 registering schemas in a runtime store. A missing local dependency returns
 `{:error, {:unavailable, Module}}`. A trusted platform creates
@@ -56,11 +61,19 @@ Contexts are trusted runtime inputs, never browser/request parameter identities.
 Process bindings do not propagate to Tasks: capture and bind them explicitly.
 
 Private helpers use `use DomainContract.Owned, owner: MyApp.Checkout` to inherit
-lexical ownership. Entity/operation fragments remain available for decomposition;
-they are private declarations, never competing public contracts. Field optionality
+lexical ownership. Type fragments remain available for shared data definitions;
+operations must be declared by their owner and cannot be imported from a fragment. Field optionality
 permits omission only; explicit null requires `{:nullable, type}` or a union with
-`:null`. Closed entities reject unknown keys. Lists, dictionaries, unions, enums,
-variants, opaque values and open entities retain their validation semantics.
+`:null`. Entities reject unknown keys and default to atom keys; declare
+`keys :strings` inside an entity for JSON inputs. Literal map types preserve their
+atom or string keys: `%{id: :integer}` and `%{"id" => :integer}` are different
+contracts. Mixed key types are rejected, and validation never converts payloads.
+
+Use typed lists, dictionaries, tuples, unions, enums and variants. `:opaque`, `:any`,
+untyped `:map`/`:list`, and open entities are rejected. Application structs require
+`{:struct, Module, %{field: type, ...}}` with every field declared. Date, Time,
+NaiveDateTime and DateTime have built-in ISO calendar shapes and value validation.
+Do not pass a database record when an operation only needs a few projected fields.
 
 ## Independent builds and replacement
 
@@ -74,24 +87,26 @@ not a mutable runtime provider registry. The runtime still owns package provenan
 authorization, transport routing, isolation and safe hot replacement.
 
 `DomainContract.Compatibility.satisfies(provider, retained_requirements)` checks
-inputs contravariantly and outputs/notifications covariantly, including closed
+inputs contravariantly and outputs/errors/notifications covariantly, including closed
 structures, required/optional fields and enums. New optional input props and new
 operations are compatible; newly required inputs and removed required operations
 are incompatible. New output fields can break a closed receiving schema.
-The captured declaration conservatively retains its public surface; arbitrary
-implementation behavior is not inferred from code or from digests.
+Only selected operations/commands and their reachable entities are captured.
+Unrelated provider changes do not expand consumer requirements or permissions.
+Arbitrary implementation behavior is not inferred from code or from digests.
 
 ## Phoenix UI
 
 ```elixir
 defmodule MyAppWeb.Editor do
   use Phoenix.LiveComponent
-  use DomainContract.UI, entry: :live, prop_modes: [editable?: :controlled]
+  use DomainContract.UI, entry: :live, prop_modes: [editable?: :controlled],
+    prop_types: [source: %{id: :integer}]
 
   contract do
     version 1
     responsibility "Owns item editing and validation; does not own navigation."
-    consumes MyApp.Items
+    consumes MyApp.Items, only: [:get]
     command :request_close
     emit :changed, payload: %{id: :integer, change: {:enum, [:created, :updated]}}
   end
@@ -110,7 +125,8 @@ end
 ```
 
 Use native Phoenix `attr`/`slot` once; their diagnostics remain intact. Metadata
-includes initial/controlled props and slots, not internal socket assigns. Dynamic
+includes initial/controlled props and slots, not internal socket assigns. Refine
+Phoenix container attributes using `prop_types`; untyped public props are rejected. Dynamic
 boundaries can call `DomainContract.UI.validate_props/2`. One public function
 component per module is selected with `entry:`; render/private helpers are not
 additional public surfaces.
@@ -137,8 +153,10 @@ assign updates remain valid; reserved command/notification bypasses are diagnost
 
 ## Metadata and runtime lifetime
 
-Format 8 exports contain a `contracts` list of owner/dependency declarations and
-one `schemas` index keyed by public revision. A dependency contains `module`,
+Format 9 exports contain a `contracts` list of owner/dependency declarations and
+one `schemas` index keyed by executable public schema. Private `metadata`, owner
+responsibility and documentation remain on owner descriptors and are excluded from
+this identity. `Schemas.unbundle/1` restores the full reviewed owner declaration. A dependency contains `module`,
 `schema` and `optional`; a subscription adds the event `name`. Self references
 resolve to the owner's definition. `mix domain.export` derives this bundle from
 persisted BEAM attributes without activating provider code. Implementation metadata
@@ -171,121 +189,59 @@ are no longer available, invocation returns `{:error, {:invalid_contract,
 Each invocation selects its dependency, operation and entity index once for both
 input and output. `__contract_entry__/0` captures the schema and local `call/3`
 from one code generation, preventing a concurrent update from redirecting checked
-input to incompatible code. Runtime checks an already admitted schema pair; it
-does not repeat structural comparison. Trusted installations approve compatible
-pairs with `SchemaStore.approve/2`. Exact same-schema plain calls need no store.
+input to incompatible code. Bound calls approve compatible installed schema pairs
+with `SchemaStore.approve/2`, caching the result for their installation lifetime.
+Plain local calls validate selected requirements against the captured provider;
+identical schemas need no structural comparison or store.
 `Context` contains consumer, trusted caller and required schema references only.
 Platform execution IDs, authorization grants and storage belong to the embedding
 context. `Info.declaration/3` creates trusted synthetic declarations;
 `Info.binding/1` projects canonical requirements. Already validated adapters may
 use `Context.captured/2`; none of these operations retain schemas. Runtime calls
-accept format 8 only; old metadata requires an explicit offline conversion before
-admission. Code rollback is checked against current consumers and data and never
+accept format 9 only; old metadata must be rebuilt from migrated source before
+admission. Key representation and error types cannot be inferred from an old export. Code rollback is checked against current consumers and data and never
 repeats effects automatically.
 
 ## Architecture review
 
-Check native boundaries in a compiled application explicitly:
+Check operation boundaries in a compiled application:
 
 ```sh
 mix domain.check --application my_app --strict
 ```
 
-The minimal path is two owners, one declared dependency and an exact native
-signature. The provider publishes its entry point in its existing inline contract:
+Providers implement their declared operations through `call/3`; consumers declare
+`consumes(MyApp.Inventory, only: [:fetch])` and use `DomainContract.call(MyApp.Inventory, :fetch, input)`.
+The raising form `call!/3` returns the successful value and raises on operation or
+validation errors. Both forms use the same validation and captured requirements.
+Direct cross-owner calls to `Inventory.call/3`, helpers or structs are rejected.
+There is no parallel native API and no `native`, `uses`, `exports` or `gateways`
+metadata. Old declarations fail compilation instead of silently losing enforcement.
 
-```elixir
-# MyApp.Inventory's contract
-metadata(%{architecture: %{native: [fetch: 1]}})
+An owner owns its namespace. `metadata(%{architecture: %{owns: [OtherNamespace]}})`
+adds namespaces. `use DomainContract.Owned, owner: MyApp.Inventory` assigns private
+helpers outside that namespace; helpers inherit the owner's dependencies.
+Ordinary Elixir functions remain usable inside an owner. Phoenix function
+components expose their declared props, while behaviour callbacks remain runtime
+entry points, not cross-owner domain APIs.
 
-# MyApp.Checkout's contract
-metadata(%{architecture: %{uses: [MyApp.Inventory], native: [run: 1]}})
-```
+The checker reads BEAM debug AST without starting the application. Aliases,
+delegates, captures, literal `apply` and struct references are checked after
+expansion. Literal operation inputs are checked against the declared schema;
+computed inputs and outputs are validated at runtime. Missing debug info and
+unresolved dynamic dispatch fail. `--strict` additionally requires every module
+to have an owner. `--exclude-dir test/support` excludes an explicit source directory.
+Dependency owners are discovered without checking their implementation bodies.
 
-`MyApp.Checkout.run/1` can now call `MyApp.Inventory.fetch/1`. Calling an inventory
-helper, calling `fetch/2`, or removing `uses` fails the check. Extra public owner
-functions fail even when nobody calls them. `consumes` also declares dependencies;
-contracts with operations expose `call/3`. Native payloads and results retain their
-existing Elixir schemas; this check does not add runtime payload validation.
-
-An owner owns its namespace. `owns: [MyApp.OtherNamespace]` adds a namespace; the
-closest owner wins and equal claims by different owners fail. Existing
-`use DomainContract.Owned, owner: MyApp.Inventory` annotations assign helpers outside
-that namespace and must agree with any namespace owner. Helper functions can be
-public within the owner. To publish a record, explicitly add, for example,
-`exports: %{MyApp.Inventory.Record => [__struct__: 0, __struct__: 1]}` to its owner's
-architecture metadata. Fields and validation stay in the record module. Struct
-construction and patterns require the exported `__struct__/0` identity; actual
-constructor calls are checked at their exact arity.
-
-The policy fields are `owns`, `uses`, `native`, `exports`, and `gateways`. Signatures are keyword
-lists (serialized as `[["fetch", 1]]`), including repeated names for multiple
-arities. Unknown fields and nonexistent dependencies/exports fail. There are no
-wildcard permissions. Macros use their source name and arity, not BEAM's encoded
-`MACRO-name/(arity+1)` export.
-
-The checker reads the application's `.app` inventory and BEAM debug AST without
-starting the application or loading its implementation modules. Aliases, delegates,
-remote captures, literal `apply`, and struct references are checked after expansion.
-`--strict` requires ownership for every module, including generated modules.
-`--exclude-dir test/support` explicitly excludes a source directory and can be
-repeated. No directories are excluded by default. Missing BEAM/debug info fails.
-Exact Spark/DomainContract/Phoenix metadata functions are recognized by signature
-and macro origin. Behaviour callbacks and declared Phoenix components are valid
-public entries; their implementation bodies are still checked.
-Entry adapters selected with `use DomainContract, entry: Adapter` can generate
-constant metadata functions. The compiler records their exact signatures and
-origin; executable adapter wrappers and user-written lookalikes remain checked.
-
-The equivalent API, after compilation, is
-`DomainContract.Architecture.check_application(:my_app, strict: true, exclude_dirs: [])`,
-returning `:ok` or `{:error, diagnostics}`. Each violation identifies its reason,
-module and available source location; references include the caller and target MFA.
-Without `strict: true`, only the complete-ownership requirement is relaxed.
-
-The checker discovers compiled owners in referenced dependency applications too.
-Discovery does not approve a dependency: an external helper still requires its
-owner in `uses`/`consumes` and its exact MFA in that owner's exports. Dependency
-bodies, erased macros, message protocols and whole-program data flow remain outside
-the selected application's check.
-
-Explicit `DomainContract.invoke/4`, macro-expanded calls and literal `apply` calls
-are checked for a declared `consumes` target and a real operation. Fully literal
-inputs are validated using the existing DSL schema. Computed inputs and results
-remain the runtime validator's responsibility; no schema shapes are duplicated.
-Literal operations and inputs on direct native `Owner.call/3` calls receive the
-same schema check, in addition to their dependency and exact-MFA checks.
-
-Unresolved dynamic dispatch is an error. `value.field` can dispatch to a module;
-the checker treats it as data only when a map/struct pattern, guard or local map
-binding proves its receiver is a map. Otherwise use an explicit map operation or
-provide a suitable pattern/guard. Behaviour callbacks and HEEx bodies are checked.
-
-For a real runtime callback port, declare only its reviewed invocation:
-
-```elixir
-gateways: [%{
-  module: MyApp.Transport,
-  function: :send, arity: 2,
-  kind: :callback,
-  dispatch: "deliver.(message)",
-  reason: "Invoke the delivery callback captured by the transport adapter."
-}]
-```
-
-Put this list inside the owner's `architecture` metadata. Copy the exact expanded
-`dispatch` expression from a diagnostic after reviewing the call. `:callback`
-means an anonymous-function invocation; `:native` means an intentional dynamic
-MFA; `:contract` means a contract router or reusable helper using a captured caller
-context. Contract gateways retain runtime context/grant/schema validation, and
-known operations and literal inputs are still checked when their schema is
-available. They do not grant a lexical dependency. A declaration matches only its
-owned module, caller name/arity, kind and expression; unused declarations fail.
-Static native calls and other expressions in the same function remain checked.
+The equivalent API is `DomainContract.Architecture.check_application(:my_app,
+strict: true)`. It returns `:ok` or `{:error, diagnostics}` with source locations.
+Entry adapters may generate constant metadata functions; executable wrappers
+remain checked. Erased macros, arbitrary message protocols and whole-program
+data flow are outside the static check.
 
 The executable [golden-path fixture](test/fixtures/architecture/lib/example.ex)
-and its mutation tests exercise the small native API independently of a larger
-application migration. To run the fixture from a clean build:
+and its mutation tests exercise two owners communicating through one operation.
+To run the fixture from a clean build:
 
 ```sh
 cd test/fixtures/architecture
@@ -321,9 +277,15 @@ obligations require human review and behavioral tests. Boundary continues to enf
 configured implementation boundaries.
 Run `mix verify` for formatting, compilation with warnings as errors and all tests.
 
-Format transition and coordinated runtime rollout: [format 8 deployment](docs/format-8-deployment.txt).
+`string` accepts UTF-8 text; `binary` accepts arbitrary bytes. Use `json` only at
+an actual JSON transport or document boundary whose contents belong to another
+owner. It rejects structs, atom keys, arbitrary atoms, tuples and runtime handles.
+Describe business records with fields and entities instead of replacing `opaque`
+with `json` everywhere. Errors are part of each operation's schema; the default
+`never` means that operation does not return a business error.
 
-Version 1.1 adds the executable `__contract_entry__/0` protocol. Recompile ordinary
-providers and consumers together when upgrading from 1.0; structural metadata
-remains format 8 and unchanged interfaces retain their schema IDs. Implementation
-checks reject an old executable without the paired schema/callback entry.
+Version 2.0 uses format 9. Rebuild providers, consumers and their exports together.
+Remove architecture bypass declarations, operation fragments and untyped payloads;
+select consumed operations, declare key modes and expected errors. Refresh independent
+metadata inputs before compiling consumers. Old executable packages are not upgraded
+by changing a JSON version number. The previous format-8 deployment notes are historical.

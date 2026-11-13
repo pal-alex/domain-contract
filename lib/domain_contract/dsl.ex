@@ -18,7 +18,11 @@ defmodule DomainContract.Dsl do
     name: :entity,
     target: DomainContract.Entity,
     args: [:name],
-    schema: [name: [type: :atom, required: true], description: [type: :string]],
+    schema: [
+      name: [type: :atom, required: true],
+      keys: [type: {:in, [:atoms, :strings]}, default: :atoms],
+      description: [type: :string]
+    ],
     entities: [fields: [@field]]
   }
 
@@ -32,6 +36,7 @@ defmodule DomainContract.Dsl do
       output: [type: :atom],
       input_type: [type: :any],
       output_type: [type: :any],
+      error_type: [type: :any, default: :never],
       optional_output: [type: :boolean, default: false],
       description: [type: :string]
     ],
@@ -45,25 +50,20 @@ defmodule DomainContract.Dsl do
     name: :types,
     target: DomainContract.DeclarationReference,
     args: [:module],
-    modules: [:module],
-    schema: [module: [type: :atom, required: true]],
+    no_depend_modules: [:module],
+    schema: [module: [type: :atom, required: true], only: [type: {:list, :atom}]],
     auto_set_fields: [kind: :entities]
-  }
-
-  @operations %Spark.Dsl.Entity{
-    name: :operations,
-    target: DomainContract.DeclarationReference,
-    args: [:module],
-    modules: [:module],
-    schema: [module: [type: :atom, required: true]],
-    auto_set_fields: [kind: :operations]
   }
 
   @dependency %Spark.Dsl.Entity{
     name: :consumes,
     target: DomainContract.Reference,
     args: [:module],
-    schema: [module: [type: :atom, required: true], optional: [type: :boolean, default: false]]
+    schema: [
+      module: [type: :atom, required: true],
+      only: [type: {:list, :atom}, required: true],
+      optional: [type: :boolean, default: false]
+    ]
   }
   @subscription %Spark.Dsl.Entity{
     name: :subscribe,
@@ -94,14 +94,13 @@ defmodule DomainContract.Dsl do
       @entity,
       @types,
       @operation,
-      @operations,
       @dependency,
       @subscription,
       @message,
       %{@message | name: :emit, auto_set_fields: [kind: :notification]}
     ]
   }
-  @declarations %Spark.Dsl.Section{name: :declarations, entities: [@operation, @entity]}
+  @declarations %Spark.Dsl.Section{name: :declarations, entities: [@entity]}
   def single_contract do
     quote do
       if Module.get_attribute(__MODULE__, :domain_contract_declared) do

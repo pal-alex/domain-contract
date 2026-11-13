@@ -207,6 +207,17 @@ defmodule DomainContract.Architecture.Beam do
        ),
        do: true
 
+  # Phoenix-generated template functions receive the framework assigns map.
+  # Only its direct field reads are exempt; application expressions and reads
+  # on nested values still require their own map evidence.
+  defp framework_reference?(
+         %{dynamic: :call, dispatch: dispatch},
+         {_name, 1},
+         Phoenix.Template,
+         _module
+       ),
+       do: Regex.match?(~r/^assigns\.[a-z_][a-zA-Z0-9_?!]*$/, dispatch)
+
   defp framework_reference?(_, _, _, _), do: false
 
   # A capture's AST contains a zero-argument call-shaped node. Do not also
@@ -308,14 +319,10 @@ defmodule DomainContract.Architecture.Beam do
     walk([module | args], refs)
   end
 
-  defp walk({{:., _, [function]}, meta, args} = node, refs) when is_list(args) do
-    refs =
-      if match?({kind, _, _} when kind in [:fn, :&], function),
-        do: refs,
-        else: dynamic(meta, :function, refs, node)
-
-    walk([function | args], refs)
-  end
+  # A closure invokes code whose module references are checked where it is built.
+  # It is not a dynamically selected module; remote captures and apply remain checked.
+  defp walk({{:., _, [function]}, _meta, args}, refs) when is_list(args),
+    do: walk([function | args], refs)
 
   defp walk(tuple, refs) when is_tuple(tuple), do: walk(Tuple.to_list(tuple), refs)
   defp walk(list, refs) when is_list(list), do: Enum.reduce(list, refs, &walk/2)

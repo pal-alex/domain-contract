@@ -21,6 +21,26 @@ defmodule DomainContract.Context do
   @key {__MODULE__, :binding}
   def current, do: Process.get(@key)
 
+  @doc false
+  def enter(_consumer, nil, function), do: function.(nil)
+
+  def enter(consumer, context, function) do
+    with {:ok, previous} <- fetch(context) do
+      binding =
+        if previous.consumer["module"] == consumer["module"],
+          do: previous,
+          else: captured(consumer, previous.caller)
+
+      context = owner_context(context, binding)
+      bind(context, fn -> function.(context) end)
+    end
+  end
+
+  defp owner_context(%__MODULE__{}, binding), do: binding
+
+  defp owner_context(%{domain_contract: _} = context, binding),
+    do: %{context | domain_contract: binding}
+
   def bind(context, function) when is_function(function, 0) do
     with {:ok, _binding} <- fetch(context) do
       previous = Process.get(@key)
@@ -35,7 +55,7 @@ defmodule DomainContract.Context do
   end
 
   @doc false
-  def fetch(%__MODULE__{consumer: %{"format_version" => version}}) when version != 8,
+  def fetch(%__MODULE__{consumer: %{"format_version" => version}}) when version != 9,
     do: {:error, {:invalid_contract, :format_version}}
 
   def fetch(%__MODULE__{} = context) do
@@ -68,7 +88,7 @@ defmodule DomainContract.Context do
   def for_entry(reference, caller) do
     captured(
       %{
-        "format_version" => 8,
+        "format_version" => 9,
         "module" => "Elixir.DomainContract.Context",
         "version" => 1,
         "consumes" => [Map.put(reference, "optional", false)]

@@ -4,7 +4,6 @@ end
 
 defmodule ArchitectureExample.Inventory.Helper do
   def fetch(id), do: %ArchitectureExample.Inventory.Record{id: id}
-  def secret, do: :private
 end
 
 defmodule ArchitectureExample.Inventory do
@@ -12,19 +11,15 @@ defmodule ArchitectureExample.Inventory do
 
   contract do
     version(1)
-    responsibility("Owns inventory and its records.")
-
-    metadata(%{
-      architecture: %{
-        native: [fetch: 1],
-        exports: %{
-          ArchitectureExample.Inventory.Record => [__struct__: 0, __struct__: 1]
-        }
-      }
-    })
+    responsibility("Owns inventory and its private records.")
+    operation(:fetch, input_type: :integer, output_type: :integer)
   end
 
-  def fetch(id), do: ArchitectureExample.Inventory.Helper.fetch(id)
+  @impl true
+  def call("fetch", id, _context) do
+    record = ArchitectureExample.Inventory.Helper.fetch(id)
+    {:ok, Map.fetch!(record, :id)}
+  end
 end
 
 defmodule ArchitectureExample.Checkout do
@@ -34,8 +29,10 @@ defmodule ArchitectureExample.Checkout do
   contract do
     version(1)
     responsibility("Owns checkout.")
-    metadata(%{architecture: %{uses: [Stock], native: [run: 1]}})
+    operation(:run, input_type: :integer, output_type: :integer)
+    consumes(Stock, only: [:fetch])
   end
 
-  def run(id), do: Stock.fetch(id)
+  @impl true
+  def call("run", id, _context), do: DomainContract.call(Stock, :fetch, id)
 end

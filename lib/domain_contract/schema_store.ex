@@ -15,6 +15,29 @@ defmodule DomainContract.SchemaStore do
 
   def retain(holder, schemas) when is_map(schemas), do: call({:retain, holder, schemas, :union})
 
+  @doc "Retains an ordinary OTP application's compiled schemas for its owner's lifetime."
+  def retain_application(holder, application) do
+    schemas =
+      application
+      |> Application.spec(:modules)
+      |> Enum.flat_map(fn module ->
+        case DomainContract.Artifact.from_beam(File.read!(:code.which(module))) do
+          {:ok, artifact} ->
+            [artifact]
+
+          {:error, :not_contract} ->
+            []
+
+          error ->
+            raise ArgumentError,
+                  "invalid installed contract #{inspect(module)}: #{inspect(error)}"
+        end
+      end)
+      |> DomainContract.Schemas.index()
+
+    retain(holder, schemas)
+  end
+
   def replace(holder, schemas) when is_map(schemas),
     do: call({:retain, holder, schemas, :replace})
 

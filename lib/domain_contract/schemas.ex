@@ -3,7 +3,10 @@ defmodule DomainContract.Schemas do
   alias DomainContract.Info
   alias DomainContract.Reference
 
-  def definition(owner), do: Map.drop(owner, ~w(consumes subscriptions schemas digest))
+  @envelope ~w(metadata responsibility description consumes subscriptions)
+
+  def definition(owner), do: owner |> Map.drop(@envelope ++ ~w(schemas digest)) |> runtime()
+
   def id(%{"schema" => id}) when is_binary(id), do: id
   def id(owner), do: owner |> definition() |> Reference.digest()
 
@@ -56,18 +59,13 @@ defmodule DomainContract.Schemas do
     owners = Enum.map(owners, &Info.canonical/1)
 
     %{
-      "format_version" => 8,
-      "contracts" =>
-        Enum.map(owners, fn owner ->
-          owner
-          |> Map.take(~w(module consumes subscriptions digest))
-          |> Map.put("schema", id(owner))
-        end),
+      "format_version" => 9,
+      "contracts" => Enum.map(owners, &descriptor/1),
       "schemas" => index(owners)
     }
   end
 
-  def unbundle(%{"format_version" => 8, "contracts" => owners, "schemas" => schemas}) do
+  def unbundle(%{"format_version" => 9, "contracts" => owners, "schemas" => schemas}) do
     Enum.map(owners, fn owner ->
       wanted = (owner["consumes"] || []) ++ (owner["subscriptions"] || [])
       own_id = owner["schema"]
@@ -78,14 +76,15 @@ defmodule DomainContract.Schemas do
         do: raise(ArgumentError, "invalid bundle owner schema")
 
       definition
-      |> Map.merge(Map.take(owner, ~w(consumes subscriptions)))
+      |> restore_documentation(owner)
+      |> Map.merge(Map.take(owner, @envelope))
       |> Map.put("schemas", Map.take(schemas, required))
       |> then(&Map.put(&1, "digest", Reference.digest(&1)))
     end)
   end
 
   def unbundle(owners) when is_list(owners), do: owners
-  def unbundle(%{"format_version" => 8, "module" => _} = owner), do: [owner]
+  def unbundle(%{"format_version" => 9, "module" => _} = owner), do: [owner]
 
   @doc "Deduplicates all contract metadata in a bootstrap or admission payload."
   def pack(payload) do
@@ -110,10 +109,8 @@ defmodule DomainContract.Schemas do
 
   def unpack_prepared(payload), do: payload
 
-  defp pack_value(%{"format_version" => 8, "operations" => _, "module" => _} = owner, schemas),
-    do:
-      {Map.take(owner, ~w(module consumes subscriptions digest)) |> Map.put("schema", id(owner)),
-       merge(schemas, index([owner]))}
+  defp pack_value(%{"format_version" => 9, "operations" => _, "module" => _} = owner, schemas),
+    do: {descriptor(owner), merge(schemas, index([owner]))}
 
   defp pack_value(map, schemas) when is_map(map) do
     Enum.reduce(map, {%{}, schemas}, fn {key, value}, {result, schemas} ->
@@ -129,7 +126,7 @@ defmodule DomainContract.Schemas do
   defp pack_value(value, schemas), do: {value, schemas}
 
   defp unpack_value(%{"schema" => _, "module" => _} = owner, schemas) do
-    [owner] = unbundle(%{"format_version" => 8, "contracts" => [owner], "schemas" => schemas})
+    [owner] = unbundle(%{"format_version" => 9, "contracts" => [owner], "schemas" => schemas})
     owner
   end
 
@@ -148,7 +145,8 @@ defmodule DomainContract.Schemas do
     required = refs |> Enum.map(& &1["schema"]) |> Enum.reject(&(&1 == own_id))
 
     definition
-    |> Map.merge(Map.take(owner, ~w(consumes subscriptions digest)))
+    |> restore_documentation(owner)
+    |> Map.merge(Map.take(owner, @envelope ++ ["digest"]))
     |> Map.put("schemas", Map.take(schemas, required))
   end
 
@@ -159,6 +157,49 @@ defmodule DomainContract.Schemas do
     do: Enum.map(list, &restore_value(&1, schemas))
 
   defp restore_value(value, _schemas), do: value
+
+  defp descriptor(owner) do
+    documentation =
+      Map.new(~w(entities operations commands notifications props slots), fn key ->
+        {key, documentation(Map.get(owner, key, []))}
+      end)
+
+    owner
+    |> Map.take(@envelope ++ ~w(module digest))
+    |> Map.put("schema", id(owner))
+    |> Map.put("documentation", documentation)
+  end
+
+  defp documentation(items) do
+    Map.new(items, fn item ->
+      docs = Map.take(item, ["description"])
+
+      docs =
+        if item["fields"], do: Map.put(docs, "fields", documentation(item["fields"])), else: docs
+
+      {item["name"], docs}
+    end)
+  end
+
+  defp restore_documentation(schema, owner) do
+    Enum.reduce(Map.get(owner, "documentation", %{}), schema, fn {key, docs}, result ->
+      if key not in ~w(entities operations commands notifications props slots),
+        do: raise(ArgumentError, "invalid documentation surface")
+
+      Map.update!(result, key, &documented(&1, docs))
+    end)
+  end
+
+  defp documented(items, docs) do
+    Enum.map(items, fn item ->
+      metadata = Map.get(docs, item["name"], %{})
+      item = Map.merge(item, Map.take(metadata, ["description"]))
+
+      if item["fields"],
+        do: Map.update!(item, "fields", &documented(&1, Map.get(metadata, "fields", %{}))),
+        else: item
+    end)
+  end
 
   def expand(%{"schema" => _} = consumer) do
     owner = fetch!(consumer)
@@ -177,18 +218,67 @@ defmodule DomainContract.Schemas do
 
       declaration ->
         roots =
-          for key <- ~w(input output),
+          for key <- ~w(input output error),
               do: declaration[key <> "_type"] || ["entity", declaration[key]]
 
         entities = reachable(schema["entities"], referenced(roots), MapSet.new())
 
         %{
-          "format_version" => 8,
+          "format_version" => 9,
           "module" => schema["module"],
           "operations" => [declaration],
           "entities" => entities
         }
     end
+  end
+
+  @doc "Captures only the named operations/commands and their reachable types. UI props remain its component input."
+  def select(owner, names) do
+    schema = definition(owner)
+    names = Enum.map(names, &to_string/1)
+    available = Enum.map(schema["operations"] ++ schema["commands"], & &1["name"])
+    unknown = names -- available
+
+    if unknown != [],
+      do: raise(ArgumentError, "unknown requirements #{inspect(unknown)} in #{schema["module"]}")
+
+    schema
+    |> Map.update!("operations", &Enum.filter(&1, fn item -> item["name"] in names end))
+    |> Map.update!("commands", &Enum.filter(&1, fn item -> item["name"] in names end))
+    |> Map.put("notifications", [])
+    |> then(fn selected ->
+      roots =
+        Enum.flat_map(selected["operations"], fn operation ->
+          for key <- ~w(input output error),
+              do: operation[key <> "_type"] || ["entity", operation[key]]
+        end)
+
+      roots =
+        roots ++
+          Enum.map(selected["commands"], & &1["payload"]) ++
+          Enum.map(selected["props"], & &1["type"])
+
+      Map.put(selected, "entities", type_entities(roots, schema["entities"]))
+    end)
+  end
+
+  @doc "Captures a notification without depending on the provider's operations or other events."
+  def notification(owner, name) do
+    schema = definition(owner)
+
+    event =
+      Enum.find(schema["notifications"], &(&1["name"] == to_string(name))) ||
+        raise ArgumentError, "unknown notification #{schema["module"]}.#{name}"
+
+    schema
+    |> Map.merge(%{
+      "operations" => [],
+      "commands" => [],
+      "props" => [],
+      "slots" => [],
+      "notifications" => [event],
+      "entities" => type_entities(event["payload"], schema["entities"])
+    })
   end
 
   @doc "Selects the entity graph reachable from a DomainContract type."
@@ -203,7 +293,7 @@ defmodule DomainContract.Schemas do
       else: selected ++ reachable(entities, referenced(selected), MapSet.union(seen, wanted))
   end
 
-  defp referenced([kind, name]) when kind in ~w(entity open_entity), do: MapSet.new([name])
+  defp referenced([kind, name]) when kind in ~w(entity), do: MapSet.new([name])
   defp referenced(map) when is_map(map), do: map |> Map.values() |> referenced()
 
   defp referenced(list) when is_list(list),
@@ -224,7 +314,7 @@ defmodule DomainContract.Schemas do
     end)
     |> then(fn schema ->
       Enum.reduce(~w(operations commands notifications props slots), schema, fn key, result ->
-        Map.update!(result, key, &Enum.map(&1, fn item -> Map.delete(item, "description") end))
+        Map.update(result, key, [], &Enum.map(&1, fn item -> Map.delete(item, "description") end))
       end)
     end)
   end

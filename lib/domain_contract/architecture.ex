@@ -4,29 +4,24 @@ defmodule DomainContract.Architecture do
   alias DomainContract.Info
 
   @doc """
-  Checks native boundaries in a compiled application's BEAM files without starting it.
+  Checks operation boundaries in compiled BEAM files without starting the application.
 
-  Owners declare `metadata %{architecture: %{uses: [OtherOwner], native: [read: 1]}}`
-  in their inline contracts. Each owner owns its namespace; `owns` adds namespaces,
-  and `DomainContract.Owned` assigns helpers outside those namespaces. `exports`
-  publishes exact signatures of owned helpers, for example
-  `%{Owner.Record => [__struct__: 0, __struct__: 1]}`. `consumes` also declares a
-  dependency. Cross-owner references require both a dependency and an exported MFA.
-  Dependency applications' compiled owners are discovered without inspecting their
-  implementation bodies. Explicit `invoke/4` calls check `consumes`, operations and
-  fully literal inputs against the original DSL schema.
+  Owners declare dependencies with `consumes`. Cross-owner domain calls must use
+  `DomainContract.call/3` (or its raising form `call!/3`). Direct calls to another
+  owner's `call/3`, helpers or structs are rejected. Phoenix function component
+  entries retain their declared props interface.
+
+  Each owner owns its namespace; `metadata %{architecture: %{owns: [...]}}` adds
+  namespaces, and `DomainContract.Owned` assigns private helpers outside them.
+  There are no native exports, dependency-only uses or dynamic-dispatch gateways.
 
   Options:
 
     * `:strict` — require an owner for every application module (default `false`).
     * `:exclude_dirs` — explicit source directories to omit (default `[]`).
 
-  Compile with debug info before calling. Missing/unrecognized debug info and
-  unresolved dynamic dispatch are errors. Reviewed runtime ports can be declared
-  as exact `architecture.gateways` entries scoped to module, caller function/arity,
-  dispatch kind and expanded expression, with a reason. Ordinary static native
-  references remain checked; obsolete gateway declarations fail. This is not a
-  whole-program analysis of erased macros, message protocols or dynamic data flow.
+  Compile with debug info. Missing debug info and unresolved dynamic dispatch are
+  errors. This is not a whole-program analysis of erased macros or message protocols.
   """
   @spec check_application(atom(), keyword()) :: :ok | {:error, [map()]}
   def check_application(application, opts \\ []),

@@ -13,7 +13,11 @@ defmodule DomainContract.Owned do
   end
 
   @doc false
-  def owner(env), do: Module.get_attribute(env.module, :domain_contract_owner) || env.module
+  def owner(env) do
+    if Module.get_attribute(env.module, :domain_contract_declared),
+      do: env.module,
+      else: Module.get_attribute(env.module, :domain_contract_owner) || env.module
+  end
 
   def record(env, target, surface, name) do
     target = Macro.expand(target, env)
@@ -64,9 +68,22 @@ defmodule DomainContract.Owned do
   end
 
   defmacro __before_compile__(env) do
-    owner = owner(env)
+    owner = Module.get_attribute(env.module, :domain_contract_owner)
     Code.ensure_compiled!(owner)
-    validate(env, DomainContract.Info.canonical(owner))
+
+    if Module.get_attribute(env.module, :domain_contract_declared) do
+      unless Module.get_attribute(env.module, :domain_contract_ui) and
+               Module.get_attribute(env.module, :contract_operations) == [],
+             do:
+               raise(CompileError,
+                 file: env.file,
+                 line: env.line,
+                 description:
+                   "only a presentation-only UI contract can be a private part of another owner"
+               )
+    else
+      validate(env, DomainContract.Info.canonical(owner))
+    end
 
     quote do
       Module.register_attribute(__MODULE__, :domain_contract_owner_metadata, persist: true)

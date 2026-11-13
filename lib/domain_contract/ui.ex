@@ -1,4 +1,6 @@
 defmodule DomainContract.UI do
+  # LiveView is optional for non-Phoenix contract consumers.
+  @compile {:no_warn_undefined, Phoenix.LiveView}
   @moduledoc """
   Phoenix contracts with native attr/slot declarations as the only prop source.
   Mount participants in their parent LiveView process. Delivery is local and
@@ -26,6 +28,7 @@ defmodule DomainContract.UI do
       @domain_contract_ui true
       @domain_contract_ui_entry unquote(options[:entry])
       @domain_contract_prop_modes unquote(options[:prop_modes] || [])
+      @domain_contract_prop_types unquote(options[:prop_types] || [])
       @before_compile DomainContract.UI
     end
   end
@@ -43,6 +46,10 @@ defmodule DomainContract.UI do
       props = Enum.flat_map(public, fn {_, c} -> c.attrs end)
       slots = Enum.flat_map(public, fn {_, c} -> c.slots end)
       modes = Module.get_attribute(module, :domain_contract_prop_modes)
+      types = Module.get_attribute(module, :domain_contract_prop_types)
+
+      if Keyword.keys(types) -- Enum.map(props, & &1.name) != [],
+        do: raise(ArgumentError, "prop_types must refine declared Phoenix attributes")
 
       props =
         Enum.map(props, fn attr ->
@@ -53,6 +60,7 @@ defmodule DomainContract.UI do
             end
 
           type = if attr.opts[:values], do: {:enum, attr.opts[:values]}, else: type
+          type = Keyword.get(types, attr.name, type)
 
           type =
             if Keyword.has_key?(attr.opts, :default) and is_nil(attr.opts[:default]),
@@ -61,7 +69,7 @@ defmodule DomainContract.UI do
 
           prop = %{
             "name" => to_string(attr.name),
-            "type" => type,
+            "type" => DomainContract.Type.encode(type),
             "required" => attr.required,
             "mode" => to_string(Keyword.get(modes, attr.name, :initial))
           }
@@ -285,18 +293,18 @@ defmodule DomainContract.UI do
   def validate_props(module, props, phase \\ :initial) when phase in [:initial, :controlled] do
     contract = Info.canonical(module)
     entries = Enum.map(props, fn {k, v} -> {to_string(k), v} end)
-    duplicates = length(entries) != length(Enum.uniq_by(entries, &elem(&1, 0)))
+    invalid_keys = not Enum.all?(Map.keys(props), &is_atom/1)
     props = Map.new(entries)
 
     declared =
       contract["props"] ++
         Enum.map(contract["slots"], fn slot ->
-          %{"name" => slot["name"], "type" => ["list", "map"], "required" => slot["required"]}
+          Map.put(slot, "slot", true)
         end)
 
     unknown = Map.keys(props) -- Enum.map(declared, & &1["name"])
 
-    if duplicates or unknown != [],
+    if invalid_keys or unknown != [],
       do: {:error, {:invalid_props, unknown}},
       else:
         Enum.reduce_while(declared, :ok, fn prop, _ ->
@@ -305,6 +313,13 @@ defmodule DomainContract.UI do
               prop["required"] and props[prop["name"]] == [] and
                   Enum.any?(contract["slots"], &(&1["name"] == prop["name"])) ->
                 {:error, {:missing_slot, prop["name"]}}
+
+              prop["slot"] == true and Map.has_key?(props, prop["name"]) ->
+                value = props[prop["name"]]
+
+                if is_list(value) and Enum.all?(value, &is_map/1),
+                  do: :ok,
+                  else: {:error, {:invalid_slot, prop["name"]}}
 
               Map.has_key?(props, prop["name"]) ->
                 Runtime.validate_type(prop["type"], props[prop["name"]], contract["entities"])

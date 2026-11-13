@@ -42,13 +42,6 @@ defmodule DomainContract.Compiler do
         %DomainContract.Operation{name: name} ->
           [to_string(name)]
 
-        %DomainContract.DeclarationReference{kind: :operations, module: fragment} ->
-          Code.ensure_compiled!(fragment)
-
-          fragment.spark_dsl_config()
-          |> Spark.Dsl.Extension.get_entities([:declarations])
-          |> Enum.map(&to_string(&1.name))
-
         _ ->
           []
       end)
@@ -57,21 +50,54 @@ defmodule DomainContract.Compiler do
   end
 
   defmacro __before_compile__(env) do
-    artifact = Module.get_attribute(env.module, :domain_contract_base)
+    base = Module.get_attribute(env.module, :domain_contract_base)
+    artifact = base
 
     artifact =
       env.module |> DomainContract.UI.compile_props(artifact) |> DomainContract.Info.normalize()
 
-    public = DomainContract.Reference.snapshot(artifact)
+    artifact = Map.delete(artifact, "digest")
+
+    if DomainContract.Artifact.validate(artifact) != :ok,
+      do:
+        raise(
+          ArgumentError,
+          "invalid public contract #{inspect(env.module)}; declare concrete types for every boundary: #{inspect(DomainContract.Artifact.invalid_types(artifact))}"
+        )
+
+    architecture = Map.get(artifact["metadata"], "architecture", %{})
+
+    unless is_map(architecture) and Map.keys(architecture) -- ["owns"] == [] do
+      raise CompileError,
+        file: env.file,
+        line: env.line,
+        description:
+          "architecture supports ownership only; use operations and consumes instead of native, uses, exports or gateways"
+    end
+
+    {references, schemas} =
+      Enum.map_reduce(artifact["consumes"], artifact["schemas"], fn reference, schemas ->
+        if reference["module"] == artifact["module"] do
+          previous =
+            if reference["schema"] == DomainContract.Schemas.id(base),
+              do: base,
+              else: Map.fetch!(schemas, reference["schema"])
+
+          names = Enum.map(previous["operations"] ++ previous["commands"], & &1["name"])
+          selected = DomainContract.Schemas.select(artifact, names)
+          id = DomainContract.Schemas.id(selected)
+          {Map.put(reference, "schema", id), Map.put(schemas, id, selected)}
+        else
+          {reference, schemas}
+        end
+      end)
+
+    ids =
+      Enum.map(references ++ artifact["subscriptions"], & &1["schema"]) --
+        [DomainContract.Schemas.id(artifact)]
 
     artifact =
-      Map.update!(artifact, "consumes", fn references ->
-        Enum.map(references, fn reference ->
-          if reference["module"] == artifact["module"],
-            do: Map.put(reference, "schema", DomainContract.Schemas.id(public)),
-            else: reference
-        end)
-      end)
+      artifact |> Map.put("consumes", references) |> Map.put("schemas", Map.take(schemas, ids))
 
     DomainContract.Owned.validate(env, artifact)
     operations = Enum.map(artifact["operations"], & &1["name"])
@@ -108,9 +134,25 @@ defmodule DomainContract.Compiler do
 
     entry =
       if operations != [] do
+        invoke =
+          if adapter do
+            quote(do: &call/3)
+          else
+            quote do
+              fn operation, input, context ->
+                DomainContract.Context.enter(
+                  unquote(Macro.escape(DomainContract.Info.binding(artifact))),
+                  context,
+                  fn owner_context -> call(operation, input, owner_context) end
+                )
+              end
+            end
+          end
+
         quote do
           @doc false
-          def __contract_entry__, do: {unquote(DomainContract.Schemas.id(artifact)), &call/3}
+          def __contract_entry__,
+            do: {unquote(DomainContract.Schemas.id(artifact)), unquote(invoke)}
         end
       end
 

@@ -1,13 +1,14 @@
 defmodule Mix.Tasks.Domain.Check do
-  @shortdoc "Checks compiled native boundaries or exported contract compatibility"
+  @shortdoc "Checks compiled operation boundaries or exported contract compatibility"
   @moduledoc """
-  To check native boundaries and ownership of a compiled application:
+  To check operation boundaries and ownership of a compiled application:
 
       mix domain.check --application my_app --strict
 
   `--exclude-dir test/support` excludes an explicit source directory (repeatable).
   This mode compiles with warnings as errors and reads BEAM files without starting
-  the application. It cannot be combined with artifact paths or artifact options.
+  the application. Use `--no-compile` for an already compiled application.
+  It cannot be combined with artifact paths or artifact options.
 
   To check candidate exports against immutable owner exports:
 
@@ -39,6 +40,7 @@ defmodule Mix.Tasks.Domain.Check do
           declarations: :boolean,
           application: :string,
           strict: :boolean,
+          no_compile: :boolean,
           exclude_dir: :keep
         ]
       )
@@ -50,7 +52,13 @@ defmodule Mix.Tasks.Domain.Check do
            Keyword.has_key?(options, :declarations),
          do: Mix.raise("--application cannot be combined with artifact paths or options")
 
-      Mix.Task.run("compile", ["--warnings-as-errors"])
+      if options[:no_compile] do
+        Mix.Task.run("loadpaths")
+        Code.prepend_path(Mix.Project.compile_path())
+      else
+        Mix.Task.run("compile", ["--warnings-as-errors"])
+      end
+
       check_application(options)
     else
       if Keyword.has_key?(options, :strict) or Keyword.has_key?(options, :exclude_dir),

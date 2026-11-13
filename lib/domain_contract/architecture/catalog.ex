@@ -18,15 +18,8 @@ defmodule DomainContract.Architecture.Catalog do
     declared =
       Enum.flat_map(beams, fn {_, beam} ->
         case Keyword.get(beam.attributes, :domain_contract_artifact) do
-          [%{"metadata" => metadata, "consumes" => consumes}]
-          when is_map(metadata) and is_list(consumes) ->
-            uses =
-              case metadata["architecture"] do
-                %{"uses" => uses} when is_list(uses) -> uses
-                _ -> []
-              end
-
-            uses ++ for %{"module" => name} <- consumes, do: name
+          [%{"consumes" => consumes}] when is_list(consumes) ->
+            for %{"module" => name} <- consumes, do: name
 
           _ ->
             []

@@ -1,6 +1,6 @@
 defmodule DomainContract.Runtime do
   @moduledoc """
-  Validates declared input/output structure without accessing opaque values.
+  Validates declared input/output structure including error values and the exact key representation.
 
   Descriptions remain normative behavioral rules for implementations and callers;
   this validator does not interpret or enforce them. A successful structural check
@@ -15,37 +15,53 @@ defmodule DomainContract.Runtime do
          {:ok, declaration} <- operation(expected, operation),
          entities = Map.new(expected["entities"], &{&1["name"], &1}),
          :ok <- value(declaration, :input, input, entities),
-         {:ok, call} <- entry(target, reference) do
+         {:ok, call} <- entry(target, reference, expected, binding) do
       result = call.(to_string(operation), input, context)
 
       case result do
         {:ok, output} ->
           with :ok <- value(declaration, :output, output, entities), do: {:ok, output}
 
-        {:error, _} = error ->
-          error
+        {:error, reason} ->
+          with :ok <- value(declaration, :error, reason, entities), do: {:error, reason}
 
         _ ->
           {:error, {:invalid_contract, :invalid_result}}
       end
     end
+  rescue
+    error in DomainContract.InvocationError -> {:error, error.reason}
   end
 
   def invoke(_, _, _, _, _), do: {:error, {:invalid_contract, :invocation}}
 
   # The local capture and schema come from one code generation. A concurrent
   # replacement cannot redirect this call to unchecked new code.
-  defp entry(target, reference) do
+  defp entry(target, reference, expected, binding) do
     if Code.ensure_loaded?(target) and function_exported?(target, :__contract_entry__, 0) do
       {schema, call} = target.__contract_entry__()
 
-      if DomainContract.SchemaStore.approved?(reference["schema"], schema),
+      if approved?(target, reference, schema, expected, binding),
         do: {:ok, call},
         else: {:error, {:invalid_contract, :provider_mismatch}}
     else
       {:error, {:unavailable, target}}
     end
   end
+
+  defp approved?(target, reference, schema, expected, nil) do
+    if reference["schema"] == schema do
+      true
+    else
+      provider = target.__contract__()
+
+      DomainContract.Schemas.id(provider) == schema and
+        DomainContract.Compatibility.satisfies(provider, expected) == :ok
+    end
+  end
+
+  defp approved?(_target, reference, schema, _expected, _binding),
+    do: DomainContract.SchemaStore.approve(reference["schema"], schema) == :ok
 
   defp consumer(owner, nil) when is_atom(owner), do: {:ok, Info.canonical(owner), nil}
 
@@ -71,7 +87,7 @@ defmodule DomainContract.Runtime do
   def input(source, operation, value), do: validate(source, operation, :input, value)
   def output(source, operation, value), do: validate(source, operation, :output, value)
 
-  def dependency(%{"format_version" => version}, _module) when version != 8,
+  def dependency(%{"format_version" => version}, _module) when version != 9,
     do: {:error, {:invalid_contract, :format_version}}
 
   def dependency(consumer, module) do
@@ -80,7 +96,7 @@ defmodule DomainContract.Runtime do
     declared_dependency(consumer, module)
   end
 
-  defp declared_dependency(%{"format_version" => version}, _module) when version != 8,
+  defp declared_dependency(%{"format_version" => version}, _module) when version != 9,
     do: {:error, {:invalid_contract, :format_version}}
 
   defp declared_dependency(consumer, module) do
@@ -100,8 +116,14 @@ defmodule DomainContract.Runtime do
 
   # A compiled local owner carries its requirements inline. Bound platform
   # consumers use schemas owned by the selected installation.
-  defp definition(%{"module" => module, "operations" => _} = consumer, %{"module" => module}),
-    do: DomainContract.Schemas.definition(consumer)
+  defp definition(
+         %{"module" => module, "operations" => _} = consumer,
+         %{"module" => module} = reference
+       ) do
+    Map.get_lazy(Map.get(consumer, "schemas", %{}), reference["schema"], fn ->
+      DomainContract.Schemas.definition(consumer)
+    end)
+  end
 
   defp definition(consumer, reference),
     do: DomainContract.Reference.definition(reference, Map.get(consumer, "schemas", %{}))
@@ -115,7 +137,7 @@ defmodule DomainContract.Runtime do
   def validate_type(type, value, entities \\ [], path \\ []),
     do:
       check(
-        type |> Info.encode() |> Jason.decode!(),
+        type |> DomainContract.Type.encode() |> Info.encode() |> Jason.decode!(),
         value,
         Map.new(entities, &{&1["name"], &1}),
         path
@@ -123,7 +145,7 @@ defmodule DomainContract.Runtime do
 
   # Captured compiler metadata is already canonical. Invocation must not rescan
   # build inputs or serialize the complete dependency graph for each value.
-  defp canonical(%{"format_version" => 8, "module" => module} = contract) when is_binary(module),
+  defp canonical(%{"format_version" => 9, "module" => module} = contract) when is_binary(module),
     do: contract
 
   defp canonical(source), do: Info.canonical(source)
@@ -153,39 +175,56 @@ defmodule DomainContract.Runtime do
     end
   end
 
-  defp check(["struct", name], %{__struct__: module}, _, _) when is_atom(module) do
-    if Atom.to_string(module) == name,
-      do: :ok,
-      else: {:error, {:invalid_contract, :invalid_struct}}
+  defp check(["struct", name, fields], %{__struct__: module} = value, entities, path)
+       when is_atom(module) do
+    with true <- Atom.to_string(module) == name,
+         :ok <- check(fields, Map.delete(value, :__struct__), entities, path),
+         true <- calendar_valid?(value) do
+      :ok
+    else
+      _ -> invalid(path)
+    end
   end
 
-  defp check("any", _value, _entities, _path), do: :ok
   defp check("atom", value, _, _) when is_atom(value), do: :ok
-  defp check("list", value, _, _) when is_list(value), do: :ok
-  defp check("global", value, _, _) when is_map(value), do: :ok
   defp check(["nullable", _], nil, _, _), do: :ok
   defp check(["nullable", type], value, entities, path), do: check(type, value, entities, path)
 
-  defp check(fields, value, entities, path) when is_map(fields) and is_map(value) do
-    original_size = map_size(value)
-    value = normalize_keys(value)
-
-    if map_size(value) == original_size and
-         Enum.sort(Map.keys(fields)) == Enum.sort(Map.keys(value)),
-       do: each(fields, fn {key, type} -> check(type, value[key], entities, path ++ [key]) end),
-       else: invalid(path ++ [:unknown_or_missing_field])
+  defp check(["map", mode, fields], value, entities, path) when is_map(value) do
+    with {:ok, indexed} <- keys(value, mode),
+         true <- Enum.sort(Map.keys(fields)) == Enum.sort(Map.keys(indexed)) do
+      each(fields, fn {key, type} -> check(type, indexed[key], entities, path ++ [key]) end)
+    else
+      _ -> invalid(path ++ [:unknown_or_missing_field])
+    end
   end
 
-  defp check("opaque", _value, _entities, _path), do: :ok
+  defp check(["tuple", types], value, entities, path) when is_tuple(value) do
+    if tuple_size(value) == length(types),
+      do:
+        each(Enum.zip(types, Tuple.to_list(value)), fn {type, item} ->
+          check(type, item, entities, path)
+        end),
+      else: invalid(path)
+  end
+
   defp check("null", nil, _entities, _path), do: :ok
-  defp check("string", value, _, _) when is_binary(value), do: :ok
+  defp check("binary", value, _, _) when is_binary(value), do: :ok
+
+  defp check("string", value, _, path) when is_binary(value),
+    do: if(String.valid?(value), do: :ok, else: invalid(path))
+
+  defp check("json", value, _, path), do: if(json?(value), do: :ok, else: invalid(path))
   defp check("integer", value, _, _) when is_integer(value), do: :ok
   defp check("float", value, _, _) when is_number(value), do: :ok
   defp check("boolean", value, _, _) when is_boolean(value), do: :ok
 
   defp check("json_scalar", value, _, _)
-       when is_nil(value) or is_boolean(value) or is_binary(value) or is_number(value),
+       when is_nil(value) or is_boolean(value) or is_number(value),
        do: :ok
+
+  defp check("json_scalar", value, entities, path) when is_binary(value),
+    do: check("string", value, entities, path)
 
   defp check(["enum", values], value, _, path) do
     encoded =
@@ -222,39 +261,26 @@ defmodule DomainContract.Runtime do
     if match?({:ok, _, _}, DateTime.from_iso8601(value)), do: :ok, else: invalid(path)
   end
 
-  defp check("map", value, _, _) when is_map(value), do: :ok
-
   defp check(["list", type], values, entities, path) when is_list(values),
     do: each(values, &check(type, &1, entities, path))
 
-  defp check(["dictionary", type], values, entities, path) when is_map(values) do
+  defp check(["dictionary", type], values, entities, path)
+       when is_map(values) and not is_struct(values) do
     each(values, fn {key, value} ->
       if is_binary(key), do: check(type, value, entities, path ++ [key]), else: invalid(path)
     end)
   end
 
-  defp check([kind, name], value, entities, path)
-       when kind in ["entity", "open_entity"] and is_map(value) do
-    original = value
-    value = normalize_keys(value)
-    fields = entities[name]["fields"]
-    keys = Enum.map(fields, & &1["name"])
+  defp check(["entity", name], value, entities, path) when is_map(value) do
+    entity = Map.fetch!(entities, name)
+    fields = entity["fields"]
+    names = Enum.map(fields, & &1["name"])
 
-    valid_keys? =
-      case kind do
-        "entity" ->
-          Enum.all?(Map.keys(value), &(&1 in keys))
-
-        "open_entity" ->
-          Enum.all?(Map.keys(original), fn key ->
-            is_binary(key) or (is_atom(key) and Atom.to_string(key) in keys)
-          end)
-      end
-
-    if valid_keys? and map_size(original) == map_size(value) do
-      each(fields, &field(&1, value, entities, path))
+    with {:ok, indexed} <- keys(value, entity["keys"]),
+         true <- Enum.all?(Map.keys(indexed), &(&1 in names)) do
+      each(fields, &field(&1, indexed, entities, path))
     else
-      invalid(path ++ [:unknown_field])
+      _ -> invalid(path ++ [:unknown_field])
     end
   end
 
@@ -279,9 +305,40 @@ defmodule DomainContract.Runtime do
         end
       end)
 
-  defp normalize_keys(value),
+  defp keys(value, _) when is_struct(value), do: :error
+
+  defp keys(value, "atoms") do
+    if Enum.all?(Map.keys(value), &is_atom/1),
+      do: {:ok, Map.new(value, fn {key, v} -> {Atom.to_string(key), v} end)},
+      else: :error
+  end
+
+  defp keys(value, "strings") do
+    if Enum.all?(Map.keys(value), &is_binary/1), do: {:ok, value}, else: :error
+  end
+
+  defp calendar_valid?(%{__struct__: module} = value)
+       when module in [Date, DateTime, NaiveDateTime, Time] do
+    date = module == Time or Calendar.ISO.valid_date?(value.year, value.month, value.day)
+
+    time =
+      module == Date or
+        Calendar.ISO.valid_time?(value.hour, value.minute, value.second, value.microsecond)
+
+    date and time
+  end
+
+  defp calendar_valid?(_), do: true
+
+  defp json?(value) when is_nil(value) or is_boolean(value) or is_number(value), do: true
+  defp json?(value) when is_binary(value), do: String.valid?(value)
+  defp json?(value) when is_list(value), do: Enum.all?(value, &json?/1)
+
+  defp json?(value) when is_map(value) and not is_struct(value),
     do:
-      Map.new(value, fn {key, v} -> {if(is_atom(key), do: Atom.to_string(key), else: key), v} end)
+      Enum.all?(value, fn {key, item} -> is_binary(key) and String.valid?(key) and json?(item) end)
+
+  defp json?(_), do: false
 
   defp invalid(path), do: {:error, {:invalid_contract, path}}
 end

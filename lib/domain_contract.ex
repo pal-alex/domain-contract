@@ -23,7 +23,7 @@ defmodule DomainContract do
       Fragment,
       Implementation,
       Info,
-      Legacy,
+      InvocationError,
       Reference,
       Schemas,
       SchemaStore,
@@ -91,6 +91,16 @@ defmodule DomainContract do
         unquote(input),
         DomainContract.Context.current()
       )
+    end
+  end
+
+  @doc "Calls a declared operation and returns its successful value, raising on failure."
+  defmacro call!(target, operation, input) do
+    quote do
+      case DomainContract.call(unquote(target), unquote(operation), unquote(input)) do
+        {:ok, value} -> value
+        {:error, reason} -> raise "domain operation failed: #{inspect(reason)}"
+      end
     end
   end
 
