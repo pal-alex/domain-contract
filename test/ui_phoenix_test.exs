@@ -115,6 +115,28 @@ defmodule DomainContract.UIPhoenixTest do
     :ok
   end
 
+  defmodule EmptyComponent do
+    use Phoenix.Component
+    use DomainContract.UI, entry: :html
+
+    contract do
+      version(1)
+      responsibility("Render a static stylesheet link without public props.")
+    end
+
+    def html(assigns), do: ~H|<link rel="stylesheet" href="/style.css" />|
+  end
+
+  test "a declared component without attributes has an empty prop contract" do
+    assert DomainContract.UI.render(EmptyComponent, %{})
+           |> Phoenix.HTML.Safe.to_iodata()
+           |> IO.iodata_to_binary() == ~s(<link rel="stylesheet" href="/style.css">)
+
+    assert_raise ArgumentError, ~r/invalid UI props/, fn ->
+      DomainContract.UI.render(EmptyComponent, %{callback: &IO.inspect/1})
+    end
+  end
+
   test "dynamic rendering accepts only the declared component and checked props" do
     assert %Phoenix.LiveView.Rendered{} =
              DomainContract.UI.render(Label, %{text: "Checked", __changed__: %{}})

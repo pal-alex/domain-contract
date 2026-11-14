@@ -40,7 +40,11 @@ defmodule DomainContract.UI do
       components = Module.get_attribute(module, :__components__) || %{}
       entry = Module.get_attribute(module, :domain_contract_ui_entry)
 
-      if entry && entry != :render && not Map.has_key?(components, entry),
+      empty_component? =
+        entry && Module.has_attribute?(module, :__components__) &&
+          Module.defines?(module, {entry, 1}, :def)
+
+      if entry && entry != :render && not Map.has_key?(components, entry) && not empty_component?,
         do: raise(ArgumentError, "UI entry must name a declared Phoenix component")
 
       public = if entry, do: Map.take(components, [entry]), else: Map.drop(components, [:render])
