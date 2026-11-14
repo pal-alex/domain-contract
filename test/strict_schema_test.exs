@@ -117,6 +117,26 @@ defmodule DomainContract.StrictSchemaTest do
     assert :ok = Runtime.validate_type({:struct, DateTime}, ~U[2026-11-13 12:00:00Z])
   end
 
+  test "propagated error unions keep one copy of each alternative and preserve key contracts" do
+    original = {:union, [{:enum, [:missing]}, %{id: :integer}, %{"id" => :integer}]}
+    imported = Info.type(original)
+
+    propagated =
+      Enum.reduce(1..8, imported, fn _, type -> Info.type({:union, [type, imported]}) end)
+
+    assert propagated == imported
+    assert Compatibility.subset?(propagated, imported)
+    assert Compatibility.subset?(imported, propagated)
+
+    for value <- [:missing, %{id: 1}, %{"id" => 1}] do
+      assert :ok = Runtime.validate_type(propagated, value)
+    end
+
+    for value <- [:busy, %{id: "1"}, %{"id" => "1"}, %{:id => 1, "id" => 1}] do
+      assert {:error, _} = Runtime.validate_type(propagated, value)
+    end
+  end
+
   test "adding provider errors is incompatible with callers that cannot handle them" do
     old = Info.canonical(Owner)
 

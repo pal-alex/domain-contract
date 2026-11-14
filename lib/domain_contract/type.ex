@@ -48,12 +48,29 @@ defmodule DomainContract.Type do
     do: ["struct", to_string(module), encode(fields)]
 
   def encode({:tuple, types}), do: ["tuple", Enum.map(types, &encode/1)]
-  def encode({:union, types}), do: ["union", Enum.map(types, &encode/1)]
+  def encode({:union, types}), do: union(types)
+  def encode(["union", types]), do: union(types)
 
   def encode({kind, type}) when kind in [:list, :dictionary, :nullable],
     do: [to_string(kind), encode(type)]
 
   def encode(value), do: value
+
+  # Imported error unions describe the same alternatives at every caller.
+  # Flatten their schema once instead of multiplying it through process chains.
+  defp union(types) do
+    alternatives =
+      types
+      |> Enum.flat_map(fn type ->
+        case encode(type) do
+          ["union", nested] -> nested
+          alternative -> [alternative]
+        end
+      end)
+      |> Enum.uniq_by(&DomainContract.Info.normalize/1)
+
+    ["union", alternatives]
+  end
 
   defp date_fields,
     do: %{year: :integer, month: :integer, day: :integer, calendar: {:enum, [Calendar.ISO]}}
