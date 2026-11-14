@@ -324,18 +324,22 @@ defmodule DomainContract.Architecture.Checker do
         [] -> nil
       end
 
-    policies[module] || candidate ||
-      policies
-      |> Enum.filter(fn {_owner, policy} ->
-        Enum.any?(policy.owns, fn prefix ->
-          Atom.to_string(module) == prefix or
-            String.starts_with?(Atom.to_string(module), prefix <> ".")
-        end)
-      end)
-      |> Enum.max_by(fn {owner, _} -> String.length(Atom.to_string(owner)) end, fn ->
-        {nil, policies[fallback]}
-      end)
-      |> elem(1)
+    policies[module] || candidate || inherited_policy(module, policies, fallback)
+  end
+
+  defp inherited_policy(module, policies, fallback) do
+    name = Atom.to_string(module)
+
+    for {_owner, policy} <- policies,
+        prefix <- policy.owns,
+        name == prefix or String.starts_with?(name, prefix <> "."),
+        reduce: {0, policies[fallback]} do
+      {length, inherited} ->
+        if String.length(prefix) > length,
+          do: {String.length(prefix), policy},
+          else: {length, inherited}
+    end
+    |> elem(1)
   end
 
   defp contract_reference(

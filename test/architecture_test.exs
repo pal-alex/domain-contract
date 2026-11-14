@@ -16,6 +16,30 @@ defmodule DomainContract.ArchitectureTest do
     assert apply(@checkout, :call, ["run", 42, nil]) == {:ok, 42}
   end
 
+  test "helpers inherit the most specific namespace, independent of owner name length", ctx do
+    compile!(
+      ctx,
+      source() <>
+        """
+        defmodule ArchitectureExample.ExtremelyLongInfrastructureOwner do
+          use DomainContract
+          contract do
+            version(1)
+            responsibility("Owns infrastructure outside the narrower domains.")
+            metadata(%{architecture: %{owns: [ArchitectureExample]}})
+          end
+        end
+
+        defmodule ArchitectureExample.Checkout.Reader do
+          def fetch(context, id),
+            do: DomainContract.invoke(context, ArchitectureExample.Inventory, :fetch, id)
+        end
+        """
+    )
+
+    assert Architecture.check_application(:architecture_example, strict: true) == :ok
+  end
+
   test "direct callbacks, captures, apply and helper calls cannot bypass the runtime", ctx do
     for call <- [
           "Stock.call(\"fetch\", id, nil)",

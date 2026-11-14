@@ -131,14 +131,16 @@ defmodule DomainContract.TypeImportTest do
       """)
     end
 
-    for {extra, name} <- [
-          {"entity :project", "project"},
-          {"types(#{inspect(Types)}, only: [:project])", "task"}
-        ] do
-      assert_raise Spark.Error.DslError, ~r/entity name collision for "#{name}"/, fn ->
-        consumer("types(#{inspect(Types)}, only: [:task])\n" <> extra)
-      end
+    assert_raise Spark.Error.DslError, ~r/entity name collision for "project"/, fn ->
+      consumer("types(#{inspect(Types)}, only: [:task])\nentity :project")
     end
+
+    {module, _} =
+      consumer(
+        "types(#{inspect(Types)}, only: [:task])\ntypes(#{inspect(Types)}, only: [:project])"
+      )
+
+    assert names(module) == ~w(project task)
   end
 
   test "invalid only and mixed fragments fail clearly" do
@@ -379,6 +381,27 @@ defmodule DomainContract.TypeImportTest do
         "types(#{inspect(first)}, only: [:task])\ntypes(#{inspect(second)}, only: [:project])"
       )
     end
+  end
+
+  test "an imported owner and a fragment can share an identical value type", ctx do
+    {owner, _, artifact} = owner(ctx)
+    path = Path.join(ctx.tmp_dir, "shared-fragment.json")
+    File.write!(path, Info.encode(Schemas.bundle([artifact])))
+    Application.put_env(:domain_contract, :metadata_paths, [path])
+
+    {module, _} =
+      consumer(
+        "types(#{inspect(owner)}, only: [:project])\ntypes(#{inspect(Types)}, only: [:project])"
+      )
+
+    assert names(module) == ["project"]
+
+    assert :ok =
+             Runtime.validate_type(
+               {:entity, :project},
+               %{id: 1},
+               module.__contract__()["entities"]
+             )
   end
 
   test "invalid owner metadata and owner/local name collisions fail at compilation", ctx do
