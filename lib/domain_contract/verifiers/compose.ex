@@ -122,6 +122,9 @@ defmodule DomainContract.Verifiers.Compose do
       visit(dsl, rest, index, seen)
     else
       case Map.get(index, name, []) do
+        [] ->
+          fail(dsl, nil, "public boundary references missing entity #{inspect(name)}")
+
         [{entity, source}] ->
           dependencies =
             entity
@@ -223,6 +226,6 @@ defmodule DomainContract.Verifiers.Compose do
       module: Transformer.get_persisted(dsl, :module),
       path: [:domain, :composition],
       message: message,
-      location: Entity.anno(entity)
+      location: if(entity, do: Entity.anno(entity))
   end
 end

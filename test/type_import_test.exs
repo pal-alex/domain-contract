@@ -68,6 +68,44 @@ defmodule DomainContract.TypeImportTest do
     assert :ok = Artifact.validate(module)
   end
 
+  test "operation roots report a missing entity as a declaration error" do
+    assert_raise Spark.Error.DslError,
+                 ~r/public boundary references missing entity "missing"/,
+                 fn ->
+                   consumer(
+                     "operation(:echo, input: :missing, output_type: :string)",
+                     ~s|def call("echo", input, _), do: {:ok, input}|
+                   )
+                 end
+  end
+
+  test "explicit schemas replace obsolete BEAM metadata without loading the provider", ctx do
+    {module, _beam, artifact} = owner(ctx)
+    unload(module)
+
+    [{^module, obsolete}] =
+      Code.compile_string("""
+      defmodule #{inspect(module)} do
+        Module.register_attribute(__MODULE__, :domain_contract_artifact, persist: true)
+        @domain_contract_artifact %{"format_version" => 8}
+      end
+      """)
+
+    unload(module)
+    File.write!(Path.join(ctx.tmp_dir, Atom.to_string(module) <> ".beam"), obsolete)
+    Code.prepend_path(ctx.tmp_dir)
+    on_exit(fn -> Code.delete_path(ctx.tmp_dir) end)
+
+    path = Path.join(ctx.tmp_dir, "owner.json")
+    File.write!(path, Info.encode(Schemas.bundle([artifact])))
+    Application.put_env(:domain_contract, :metadata_paths, [path])
+
+    assert DomainContract.Reference.resolve_metadata(module) == artifact
+    {consumer, _} = consumer("types(#{inspect(module)}, only: [:task])")
+    assert names(consumer) == ~w(project task)
+    assert :code.is_loaded(module) == false
+  end
+
   test "cross-fragment references resolve before pruning, regardless of order" do
     imports = [
       "types(#{inspect(CrossReferences)}, only: [:root])",

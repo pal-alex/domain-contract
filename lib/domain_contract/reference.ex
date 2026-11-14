@@ -48,7 +48,7 @@ defmodule DomainContract.Reference do
         else: []
 
     compiled =
-      case if(loaded == [], do: :code.which(module), else: :already_compiled) do
+      case if(external == [] and loaded == [], do: :code.which(module), else: :metadata_available) do
         path when is_list(path) and path != [] ->
           case File.read(path) do
             {:error, :enoent} ->
