@@ -338,6 +338,49 @@ defmodule DomainContract.TypeImportTest do
     refute File.exists?(Path.join(ctx.tmp_dir, "provider-loaded"))
   end
 
+  test "identical transitive imports from different owners compose, differing types still fail",
+       ctx do
+    {first, _, artifact} = owner(ctx)
+    second = unique("OtherOwner")
+    copied = artifact |> Map.put("module", Atom.to_string(second)) |> Map.delete("digest")
+    path = Path.join(ctx.tmp_dir, "shared.json")
+    File.write!(path, Info.encode(Schemas.bundle([artifact, copied])))
+    Application.put_env(:domain_contract, :metadata_paths, [path])
+
+    {module, _} =
+      consumer(
+        "types(#{inspect(first)}, only: [:task])\ntypes(#{inspect(second)}, only: [:project])"
+      )
+
+    assert names(module) == ~w(project task)
+
+    assert :ok =
+             Runtime.validate_type(
+               {:entity, :project},
+               %{id: 1},
+               module.__contract__()["entities"]
+             )
+
+    changed =
+      Map.update!(copied, "entities", fn entities ->
+        Enum.map(entities, fn
+          %{"name" => "project"} = entity ->
+            put_in(entity, ["fields", Access.at(0), "type"], "string")
+
+          entity ->
+            entity
+        end)
+      end)
+
+    File.write!(path, Info.encode(Schemas.bundle([artifact, changed])))
+
+    assert_raise Spark.Error.DslError, ~r/entity name collision for "project"/, fn ->
+      consumer(
+        "types(#{inspect(first)}, only: [:task])\ntypes(#{inspect(second)}, only: [:project])"
+      )
+    end
+  end
+
   test "invalid owner metadata and owner/local name collisions fail at compilation", ctx do
     {owner, _, artifact} = owner(ctx)
     path = Path.join(ctx.tmp_dir, "owner.json")

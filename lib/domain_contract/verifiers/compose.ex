@@ -107,6 +107,9 @@ defmodule DomainContract.Verifiers.Compose do
   end
 
   defp select(dsl, candidates, roots) do
+    # Two public owners may expose the same transitive value type. Preserve
+    # local/fragment collision checks, but share identical imported definitions.
+    candidates = Enum.uniq_by(candidates, &import_identity/1)
     index = Enum.group_by(candidates, fn {entity, _} -> name(entity) end)
     selected = visit(dsl, roots, index, MapSet.new())
 
@@ -114,6 +117,12 @@ defmodule DomainContract.Verifiers.Compose do
     |> Enum.filter(fn {entity, _} -> MapSet.member?(selected, name(entity)) end)
     |> Enum.map(&elem(&1, 0))
   end
+
+  defp import_identity({%{"name" => _} = entity, _source}) do
+    DomainContract.Schemas.runtime(%{"entities" => [entity]})["entities"]
+  end
+
+  defp import_identity(candidate), do: {make_ref(), candidate}
 
   defp visit(_dsl, [], _index, seen), do: seen
 
