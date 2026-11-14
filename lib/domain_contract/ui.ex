@@ -26,6 +26,7 @@ defmodule DomainContract.UI do
     quote do
       use DomainContract
       @domain_contract_ui true
+      Module.register_attribute(__MODULE__, :domain_contract_ui_entry, persist: true)
       @domain_contract_ui_entry unquote(options[:entry])
       @domain_contract_prop_modes unquote(options[:prop_modes] || [])
       @domain_contract_prop_types unquote(options[:prop_types] || [])
@@ -38,6 +39,10 @@ defmodule DomainContract.UI do
     if Module.get_attribute(module, :domain_contract_ui) do
       components = Module.get_attribute(module, :__components__) || %{}
       entry = Module.get_attribute(module, :domain_contract_ui_entry)
+
+      if entry && entry != :render && not Map.has_key?(components, entry),
+        do: raise(ArgumentError, "UI entry must name a declared Phoenix component")
+
       public = if entry, do: Map.take(components, [entry]), else: Map.drop(components, [:render])
 
       if map_size(public) > 1,
@@ -99,6 +104,37 @@ defmodule DomainContract.UI do
 
         def update(assigns, socket), do: super(assigns, socket)
       end
+    end
+  end
+
+  @doc "Renders the declared Phoenix component after checking its props and slots."
+  def render(module, assigns) when is_atom(module) and is_map(assigns) do
+    contract = Info.canonical(module)
+    [entry] = module.__info__(:attributes)[:domain_contract_ui_entry]
+
+    unless contract["kind"] == "ui" and is_atom(entry) and not is_nil(entry),
+      do: raise(ArgumentError, "a declared UI component entry is required")
+
+    props = Map.delete(assigns, :__changed__)
+
+    case validate_props(contract, props, :initial) do
+      :ok ->
+        defaults =
+          Map.new(
+            for prop <- contract["props"],
+                Map.has_key?(prop, "default"),
+                do: {String.to_existing_atom(prop["name"]), prop["default"]}
+          )
+
+        slots = Map.new(contract["slots"], &{String.to_existing_atom(&1["name"]), []})
+
+        assigns =
+          defaults |> Map.merge(slots) |> Map.merge(assigns) |> Map.put_new(:__changed__, nil)
+
+        apply(module, entry, [assigns])
+
+      {:error, reason} ->
+        raise ArgumentError, "invalid UI props: #{inspect(reason)}"
     end
   end
 

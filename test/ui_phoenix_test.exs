@@ -36,6 +36,21 @@ defmodule DomainContract.UIPhoenixTest do
     def render(assigns), do: ~H"<span id={@id}>{@count}</span>"
   end
 
+  defmodule Label do
+    use Phoenix.Component
+    use DomainContract.UI, entry: :label
+
+    contract do
+      version(1)
+      responsibility("Owns a checked label presentation.")
+    end
+
+    attr(:text, :string, required: true)
+    attr(:title, :string, default: "Default title")
+    slot(:inner_block)
+    def label(assigns), do: ~H"<strong title={@title}>{@text}</strong>{render_slot(@inner_block)}"
+  end
+
   defmodule Harness do
     use Phoenix.LiveView
     use DomainContract.UI
@@ -98,6 +113,23 @@ defmodule DomainContract.UIPhoenixTest do
       )
 
     :ok
+  end
+
+  test "dynamic rendering accepts only the declared component and checked props" do
+    assert %Phoenix.LiveView.Rendered{} =
+             DomainContract.UI.render(Label, %{text: "Checked", __changed__: %{}})
+
+    assert DomainContract.UI.render(Label, %{text: "Defaulted"})
+           |> Phoenix.HTML.Safe.to_iodata()
+           |> IO.iodata_to_binary() == ~s(<strong title="Default title">Defaulted</strong>)
+
+    assert_raise ArgumentError, ~r/invalid UI props/, fn ->
+      DomainContract.UI.render(Label, %{text: 42, __changed__: %{}})
+    end
+
+    assert_raise ArgumentError, ~r/invalid UI props/, fn ->
+      DomainContract.UI.render(Label, %{text: "Checked", native: &IO.inspect/1})
+    end
   end
 
   test "real Phoenix lifecycle relays addressed commands and subscription-only delivery" do

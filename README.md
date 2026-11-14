@@ -172,7 +172,8 @@ end
 Use native Phoenix `attr`/`slot` once; their diagnostics remain intact. Metadata
 includes initial/controlled props and slots, not internal socket assigns. Refine
 Phoenix container attributes using `prop_types`; untyped public props are rejected. Dynamic
-boundaries can call `DomainContract.UI.validate_props/2`. One public function
+boundaries use `DomainContract.UI.render/2` to validate props and slots, apply Phoenix defaults,
+and render the declared component. `validate_props/2` is available for other adapters. One public function
 component per module is selected with `entry:`; render/private helpers are not
 additional public surfaces.
 
