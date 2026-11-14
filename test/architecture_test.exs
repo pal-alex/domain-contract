@@ -66,6 +66,80 @@ defmodule DomainContract.ArchitectureTest do
     assert reasons(errors(), :private_reference) != []
   end
 
+  test "a consumer-only declaration cannot hide a dynamic native router", ctx do
+    text =
+      source() <>
+        """
+        defmodule ArchitectureExample.Presentation do
+          use DomainContract
+          contract do
+            version(1)
+            responsibility("Consumes inventory operations without publishing a provider.")
+            consumes(ArchitectureExample.Inventory, only: [:fetch])
+          end
+          def forward(module, input), do: module.call("fetch", input, nil)
+        end
+        """
+
+    compile!(ctx, text)
+
+    assert [%{module: ArchitectureExample.Presentation, caller: {:forward, 2}}] =
+             reasons(errors(), :dynamic_dispatch)
+  end
+
+  test "explicit captured contexts can address dynamic operations through validation", ctx do
+    text =
+      inject(source(), @helper, """
+      def forward(context, target, operation, input),
+        do: DomainContract.invoke(context, target, operation, input)
+      """)
+
+    compile!(ctx, text)
+    assert Architecture.check_application(:architecture_example, strict: true) == :ok
+  end
+
+  test "dynamic function captures cannot hide native dispatch", ctx do
+    text =
+      inject(source(), @helper, """
+      def forward(target, operation, arity), do: Function.capture(target, operation, arity)
+      """)
+
+    compile!(ctx, text)
+    assert [%{dynamic: :capture}] = reasons(errors(), :dynamic_dispatch)
+  end
+
+  test "a private consumer declaration keeps its owner boundary", ctx do
+    text =
+      source() <>
+        """
+        defmodule ArchitectureExample.Presentation do
+          use DomainContract
+          use DomainContract.Owned, owner: ArchitectureExample.Inventory
+          contract do
+            version(1)
+            responsibility("Private presentation of inventory data.")
+            consumes(ArchitectureExample.Inventory, only: [:fetch])
+          end
+          def render(id), do: DomainContract.call!(ArchitectureExample.Inventory, :fetch, id)
+        end
+        """
+
+    compile!(ctx, text)
+    assert Architecture.check_application(:architecture_example, strict: true) == :ok
+    unload(ctx)
+
+    compile!(
+      ctx,
+      String.replace(
+        text,
+        "DomainContract.call(Stock, :fetch, id)",
+        "ArchitectureExample.Presentation.render(id)"
+      )
+    )
+
+    assert reasons(errors(), :private_reference) != []
+  end
+
   test "ordinary private callbacks need no native dispatch permission", ctx do
     text = inject(source(), @helper, "def with_result(value, callback), do: callback.(value)")
     compile!(ctx, text)

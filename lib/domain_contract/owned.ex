@@ -72,15 +72,13 @@ defmodule DomainContract.Owned do
     Code.ensure_compiled!(owner)
 
     if Module.get_attribute(env.module, :domain_contract_declared) do
-      unless Module.get_attribute(env.module, :domain_contract_ui) and
-               Module.get_attribute(env.module, :contract_operations) == [],
-             do:
-               raise(CompileError,
-                 file: env.file,
-                 line: env.line,
-                 description:
-                   "only a presentation-only UI contract can be a private part of another owner"
-               )
+      unless Module.get_attribute(env.module, :contract_operations) == [],
+        do:
+          raise(CompileError,
+            file: env.file,
+            line: env.line,
+            description: "a private declaration cannot publish domain operations"
+          )
     else
       validate(env, DomainContract.Info.canonical(owner))
     end

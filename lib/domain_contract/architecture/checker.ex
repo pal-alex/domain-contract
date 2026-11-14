@@ -94,7 +94,7 @@ defmodule DomainContract.Architecture.Checker do
           with :ok <- DomainContract.Artifact.validate(artifact),
                true <- artifact["module"] == Atom.to_string(module),
                {:ok, policy} <- policy(artifact, module),
-               {:ok, policy} <- private_ui_owner(policy, beam) do
+               {:ok, policy} <- private_owner(policy, beam) do
             {Map.put(policies, module, policy), errors}
           else
             _ -> {policies, [diagnostic(module, beam.file, :invalid_architecture) | errors]}
@@ -125,13 +125,13 @@ defmodule DomainContract.Architecture.Checker do
     end
   end
 
-  defp private_ui_owner(policy, beam) do
+  defp private_owner(policy, beam) do
     case Keyword.get(beam.attributes, :domain_contract_owner_metadata, []) do
       [] ->
         {:ok, Map.put(policy, :private_owner, nil)}
 
       [owner] when is_atom(owner) ->
-        if policy.contract["kind"] == "ui" and policy.contract["operations"] == [],
+        if policy.contract["operations"] == [],
           do: {:ok, Map.put(policy, :private_owner, owner)},
           else: :error
 
@@ -267,7 +267,7 @@ defmodule DomainContract.Architecture.Checker do
             )
 
           %{dynamic: _} ->
-            if policies[owners[module]] && policies[owners[module]].provider?,
+            if policies[owners[module]],
               do: [diagnostic(module, beam.file, :dynamic_dispatch, details)],
               else: []
 

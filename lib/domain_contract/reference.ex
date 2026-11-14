@@ -84,7 +84,11 @@ defmodule DomainContract.Reference do
       if load_code? and candidates == [] do
         case Code.ensure_compiled(module) do
           {:module, _} ->
-            if function_exported?(module, :__contract__, 0), do: [module.__contract__()], else: []
+            Keyword.get(
+              :erlang.get_module_info(module, :attributes),
+              :domain_contract_artifact,
+              []
+            )
 
           _ ->
             []

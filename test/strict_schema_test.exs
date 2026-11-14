@@ -85,6 +85,19 @@ defmodule DomainContract.StrictSchemaTest do
     assert {:error, {:unavailable, Owner}} = Consumer.lookup(%{"id" => -2})
   end
 
+  test "transport adapters distinguish declared errors, invalid errors and admission failures" do
+    assert Runtime.dispatch(Consumer, Owner, :lookup, %{"id" => 0}, nil) == {:error, :missing}
+
+    assert Runtime.dispatch(Consumer, Owner, :lookup, %{"id" => -1}, nil) ==
+             {:failure, {:invalid_contract, ["lookup", :error]}}
+
+    assert Runtime.dispatch(Consumer, Owner, :lookup, %{"id" => -2}, nil) ==
+             {:failure, {:unavailable, Owner}}
+
+    assert Runtime.dispatch(Consumer, Owner, :unrelated, 1, nil) ==
+             {:failure, {:invalid_contract, :invalid_operation}}
+  end
+
   test "untyped containers, open entities and bare application structs are rejected" do
     for type <-
           ~w(opaque any map list global) ++ [["open_entity", "item"], ["struct", "Elixir.Custom"]] do

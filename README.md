@@ -266,6 +266,8 @@ metadata. Old declarations fail compilation instead of silently losing enforceme
 An owner owns its namespace. `metadata(%{architecture: %{owns: [OtherNamespace]}})`
 adds namespaces. `use DomainContract.Owned, owner: MyApp.Inventory` assigns private
 helpers outside that namespace; helpers inherit the owner's dependencies.
+A private consumer-only declaration may use `Owned` to keep local requirements
+while belonging to its parent. It cannot publish operations or expose a second API.
 Ordinary Elixir functions remain usable inside an owner. Phoenix function
 components expose their declared props, while behaviour callbacks remain runtime
 entry points, not cross-owner domain APIs.
@@ -274,7 +276,13 @@ The checker reads BEAM debug AST without starting the application. Aliases,
 delegates, captures, literal `apply` and struct references are checked after
 expansion. Literal operation inputs are checked against the declared schema;
 computed inputs and outputs are validated at runtime. Missing debug info and
-unresolved dynamic dispatch fail. `--strict` additionally requires every module
+unresolved native dynamic dispatch fail, including in consumer-only declarations.
+`invoke/4` can address a dynamic operation through a trusted captured context;
+its requirements, input and results are always validated at runtime. Literal
+addresses also receive the static dependency and input checks.
+Transport adapters use `Runtime.dispatch/5` to retain `{:failure, reason}` for
+admission, validation and delivery failures, separately from the owner's typed
+`{:error, reason}`. Ordinary `call` and `invoke` retain their two-result API. `--strict` additionally requires every module
 to have an owner. `--exclude-dir test/support` excludes an explicit source directory.
 Dependency owners are discovered without checking their implementation bodies.
 

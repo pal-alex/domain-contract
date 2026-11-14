@@ -31,6 +31,8 @@ defmodule DomainContract.Architecture.Beam do
       __phoenix_component_verify__: 1,
       __phoenix_macro_components__: 0
     ],
+    Ecto.Repo => [checkout: 2, checked_out?: 0],
+    Phoenix.Endpoint => [server_info: 1],
     Phoenix.VerifiedRoutes => [__phoenix_verify_routes__: 1],
     Phoenix.LiveView => [__live__: 0],
     Phoenix.LiveComponent => [__live__: 0]
@@ -256,7 +258,7 @@ defmodule DomainContract.Architecture.Beam do
        ) do
     walk(
       [context, target, operation, input],
-      contract(target, operation, input, meta, refs, node)
+      context_contract(target, operation, input, meta, refs, node)
     )
   end
 
@@ -268,6 +270,17 @@ defmodule DomainContract.Architecture.Beam do
     walk(
       [owner, context, target, operation, input],
       contract(target, operation, input, meta, refs, node)
+    )
+  end
+
+  defp walk(
+         {{:., _, [DomainContract.Runtime, :dispatch]}, meta,
+          [owner, target, operation, input, context]} = node,
+         refs
+       ) do
+    walk(
+      [owner, context, target, operation, input],
+      context_contract(target, operation, input, meta, refs, node)
     )
   end
 
@@ -285,7 +298,10 @@ defmodule DomainContract.Architecture.Beam do
           [Map.put(ref, :operation_call, {operation, input}) | rest]
 
         {DomainContract, :invoke, [_context, target, operation, input]} ->
-          contract(target, operation, input, meta, refs, node)
+          context_contract(target, operation, input, meta, refs, node)
+
+        {DomainContract.Runtime, :dispatch, [_owner, target, operation, input, _context]} ->
+          context_contract(target, operation, input, meta, refs, node)
 
         {DomainContract.Runtime, :invoke, [_owner, target, operation, input, _context]} ->
           contract(target, operation, input, meta, refs, node)
@@ -373,6 +389,16 @@ defmodule DomainContract.Architecture.Beam do
     do: not Enum.any?(list, &match?({:|, _, _}, &1))
 
   defp literal_list?(_), do: false
+
+  # Explicit runtime contexts carry captured requirements. Dynamic addresses still
+  # pass admission and input/result validation; they never invoke native callbacks.
+  # Literal addresses remain statically checked against lexical requirements.
+  defp context_contract(target, operation, input, meta, refs, node)
+       when is_atom(target) and not is_nil(target) and
+              (is_binary(operation) or (is_atom(operation) and not is_nil(operation))),
+       do: contract(target, operation, input, meta, refs, node)
+
+  defp context_contract(_target, _operation, _input, _meta, refs, _node), do: refs
 
   defp contract(target, operation, input, meta, refs, node)
        when is_atom(target) and not is_nil(target) do

@@ -8,7 +8,15 @@ defmodule DomainContract.Runtime do
   """
   alias DomainContract.Info
 
-  def invoke(owner, target, operation, input, context) when is_atom(target) do
+  def invoke(owner, target, operation, input, context) do
+    case dispatch(owner, target, operation, input, context) do
+      {:failure, reason} -> {:error, reason}
+      result -> result
+    end
+  end
+
+  @doc "Transport adapter entry: preserves admission/validation failures separately from typed business errors."
+  def dispatch(owner, target, operation, input, context) when is_atom(target) do
     with {:ok, consumer, binding} <- consumer(owner, context),
          {:ok, reference} <- declared_dependency(consumer, target),
          {:ok, expected} <- expected_definition(consumer, reference, binding),
@@ -16,24 +24,27 @@ defmodule DomainContract.Runtime do
          entities = Map.new(expected["entities"], &{&1["name"], &1}),
          :ok <- value(declaration, :input, input, entities),
          {:ok, call} <- entry(target, reference, expected, binding) do
-      result = call.(to_string(operation), input, context)
+      case call.(to_string(operation), input, context) do
+        {:ok, output} = result ->
+          validated_result(value(declaration, :output, output, entities), result)
 
-      case result do
-        {:ok, output} ->
-          with :ok <- value(declaration, :output, output, entities), do: {:ok, output}
-
-        {:error, reason} ->
-          with :ok <- value(declaration, :error, reason, entities), do: {:error, reason}
+        {:error, reason} = result ->
+          validated_result(value(declaration, :error, reason, entities), result)
 
         _ ->
-          {:error, {:invalid_contract, :invalid_result}}
+          {:failure, {:invalid_contract, :invalid_result}}
       end
+    else
+      {:error, reason} -> {:failure, reason}
     end
   rescue
-    error in DomainContract.InvocationError -> {:error, error.reason}
+    error in DomainContract.InvocationError -> {:failure, error.reason}
   end
 
-  def invoke(_, _, _, _, _), do: {:error, {:invalid_contract, :invocation}}
+  def dispatch(_, _, _, _, _), do: {:failure, {:invalid_contract, :invocation}}
+
+  defp validated_result(:ok, result), do: result
+  defp validated_result({:error, reason}, _result), do: {:failure, reason}
 
   # The local capture and schema come from one code generation. A concurrent
   # replacement cannot redirect this call to unchecked new code.
